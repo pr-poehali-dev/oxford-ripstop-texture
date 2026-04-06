@@ -171,22 +171,28 @@ export default function Index() {
     }, 50);
   }, []);
 
-  // Загрузка оригинала и генерация карт
+  // Загрузка через fetch → blob (обход CORS для Canvas getImageData)
   useEffect(() => {
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-    img.onload = () => {
-      const SIZE = 512;
-      const c = document.createElement("canvas");
-      c.width = SIZE; c.height = SIZE;
-      const ctx = c.getContext("2d")!;
-      ctx.drawImage(img, 0, 0, SIZE, SIZE);
-      const imgData = ctx.getImageData(0, 0, SIZE, SIZE);
-      srcRef.current = imgData;
-      processAll(imgData, normalStrength);
-    };
-    img.onerror = () => setProgress("Ошибка загрузки");
-    img.src = SOURCE_URL;
+    setProgress("Загружаю оригинал...");
+    fetch(SOURCE_URL)
+      .then((r) => r.blob())
+      .then((blob) => {
+        const blobUrl = URL.createObjectURL(blob);
+        const img = new Image();
+        img.onload = () => {
+          const SIZE = 512;
+          const c = document.createElement("canvas");
+          c.width = SIZE; c.height = SIZE;
+          c.getContext("2d")!.drawImage(img, 0, 0, SIZE, SIZE);
+          const imgData = c.getContext("2d")!.getImageData(0, 0, SIZE, SIZE);
+          srcRef.current = imgData;
+          URL.revokeObjectURL(blobUrl);
+          processAll(imgData, normalStrength);
+        };
+        img.onerror = () => setProgress("Ошибка загрузки");
+        img.src = blobUrl;
+      })
+      .catch(() => setProgress("Ошибка загрузки"));
   }, []);
 
   const handleStrengthChange = (val: number) => {
