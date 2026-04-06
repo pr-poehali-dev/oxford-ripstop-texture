@@ -12,8 +12,135 @@ function luma(r: number, g: number, b: number) {
   return 0.2126 * r + 0.7152 * g + 0.0722 * b;
 }
 
+// Gaussian blur для float array (для нормализации теней)
+function gaussBlur(src: Float32Array, w: number, h: number, radius: number): Float32Array {
+  const tmp = new Float32Array(w * h);
+  const out = new Float32Array(w * h);
+  const sigma = radius / 2;
+  const twoSigSq = 2 * sigma * sigma;
+  const kernelSize = Math.ceil(radius * 2) | 0;
+  // horizontal pass
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let sum = 0, weight = 0;
+      for (let k = -kernelSize; k <= kernelSize; k++) {
+        const xx = Math.max(0, Math.min(w - 1, x + k));
+        const w_ = Math.exp(-(k * k) / twoSigSq);
+        sum += src[y * w + xx] * w_;
+        weight += w_;
+      }
+      tmp[y * w + x] = sum / weight;
+    }
+  }
+  // vertical pass
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let sum = 0, weight = 0;
+      for (let k = -kernelSize; k <= kernelSize; k++) {
+        const yy = Math.max(0, Math.min(h - 1, y + k));
+        const w_ = Math.exp(-(k * k) / twoSigSq);
+        sum += tmp[yy * w + x] * w_;
+        weight += w_;
+      }
+      out[y * w + x] = sum / weight;
+    }
+  }
+  return out;
+}
+
+// Auto-crop: находит bounding box непустых пикселей,
+// вырезает квадратный кусок по центру и масштабирует в 512×512
+function autoCropToSquare(src: ImageData): ImageData {
+  const { width: w, height: h, data } = src;
+
+  // Определяем "фон" по углам (медиана 4 угловых пикселей)
+  const corners = [
+    { r: data[0], g: data[1], b: data[2] },
+    { r: data[(w-1)*4], g: data[(w-1)*4+1], b: data[(w-1)*4+2] },
+    { r: data[(h-1)*w*4], g: data[(h-1)*w*4+1], b: data[(h-1)*w*4+2] },
+    { r: data[((h-1)*w+(w-1))*4], g: data[((h-1)*w+(w-1))*4+1], b: data[((h-1)*w+(w-1))*4+2] },
+  ];
+  const bgR = Math.round(corners.reduce((s,c)=>s+c.r,0)/4);
+  const bgG = Math.round(corners.reduce((s,c)=>s+c.g,0)/4);
+  const bgB = Math.round(corners.reduce((s,c)=>s+c.b,0)/4);
+  const thresh = 28;
+
+  let minX = w, minY = h, maxX = 0, maxY = 0;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4;
+      const dr = Math.abs(data[i] - bgR);
+      const dg = Math.abs(data[i+1] - bgG);
+      const db = Math.abs(data[i+2] - bgB);
+      if (dr + dg + db > thresh) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+
+  // Отступ 4% от краёв
+  const pad = Math.round(Math.max(maxX - minX, maxY - minY) * 0.04);
+  minX = Math.max(0, minX - pad);
+  minY = Math.max(0, minY - pad);
+  maxX = Math.min(w - 1, maxX + pad);
+  maxY = Math.min(h - 1, maxY + pad);
+
+  // Делаем квадратный crop по центру
+  const cw = maxX - minX;
+  const ch = maxY - minY;
+  const side = Math.max(cw, ch);
+  const cx = Math.round((minX + maxX) / 2);
+  const cy = Math.round((minY + maxY) / 2);
+  const x0 = Math.max(0, cx - Math.round(side / 2));
+  const y0 = Math.max(0, cy - Math.round(side / 2));
+  const x1 = Math.min(w, x0 + side);
+  const y1 = Math.min(h, y0 + side);
+
+  // Рисуем обрезанный кусок в 512×512
+  const srcCanvas = document.createElement("canvas");
+  srcCanvas.width = w; srcCanvas.height = h;
+  srcCanvas.getContext("2d")!.putImageData(src, 0, 0);
+
+  const out = document.createElement("canvas");
+  out.width = 512; out.height = 512;
+  const octx = out.getContext("2d")!;
+  octx.drawImage(srcCanvas, x0, y0, x1 - x0, y1 - y0, 0, 0, 512, 512);
+  return octx.getImageData(0, 0, 512, 512);
+}
+
+// BaseColor: убираем глобальные тени (делим на low-frequency освещение)
 function makeBaseColor(src: ImageData): ImageData {
-  return new ImageData(new Uint8ClampedArray(src.data), src.width, src.height);
+  const { width: w, height: h, data } = src;
+  const rF = new Float32Array(w * h);
+  const gF = new Float32Array(w * h);
+  const bF = new Float32Array(w * h);
+  for (let i = 0; i < w * h; i++) {
+    rF[i] = data[i*4];
+    gF[i] = data[i*4+1];
+    bF[i] = data[i*4+2];
+  }
+  // Сильное размытие = «освещение» сцены
+  const blurR = gaussBlur(rF, w, h, 80);
+  const blurG = gaussBlur(gF, w, h, 80);
+  const blurB = gaussBlur(bF, w, h, 80);
+
+  // Средняя яркость для нормализации
+  let avgL = 0;
+  for (let i = 0; i < w * h; i++) avgL += luma(blurR[i], blurG[i], blurB[i]);
+  avgL /= (w * h);
+
+  const out = new ImageData(w, h);
+  for (let i = 0; i < w * h; i++) {
+    const scale = avgL / Math.max(1, luma(blurR[i], blurG[i], blurB[i]));
+    out.data[i*4]   = Math.max(0, Math.min(255, Math.round(rF[i] * scale)));
+    out.data[i*4+1] = Math.max(0, Math.min(255, Math.round(gF[i] * scale)));
+    out.data[i*4+2] = Math.max(0, Math.min(255, Math.round(bF[i] * scale)));
+    out.data[i*4+3] = 255;
+  }
+  return out;
 }
 
 function makeNormal(src: ImageData, strength: number): ImageData {
@@ -22,8 +149,10 @@ function makeNormal(src: ImageData, strength: number): ImageData {
   const gray = new Float32Array(w * h);
   for (let i = 0; i < w * h; i++)
     gray[i] = luma(data[i * 4], data[i * 4 + 1], data[i * 4 + 2]);
+  // Сначала сглаживаем серый для нормалей (убираем шум)
+  const smoothGray = gaussBlur(gray, w, h, 1.5);
   const g = (x: number, y: number) =>
-    gray[Math.max(0, Math.min(h - 1, y)) * w + Math.max(0, Math.min(w - 1, x))];
+    smoothGray[Math.max(0, Math.min(h - 1, y)) * w + Math.max(0, Math.min(w - 1, x))];
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       const dx = -g(x-1,y-1) - 2*g(x-1,y) - g(x-1,y+1) + g(x+1,y-1) + 2*g(x+1,y) + g(x+1,y+1);
@@ -42,9 +171,23 @@ function makeNormal(src: ImageData, strength: number): ImageData {
 
 function makeRoughness(src: ImageData): ImageData {
   const { width: w, height: h, data } = src;
+  // Roughness = инвертированный high-frequency luma (мелкие детали = шероховатость)
+  const gray = new Float32Array(w * h);
+  for (let i = 0; i < w * h; i++)
+    gray[i] = luma(data[i*4], data[i*4+1], data[i*4+2]);
+  const smooth = gaussBlur(gray, w, h, 3);
+  // min/max для stretch
+  let mn = 255, mx = 0;
+  for (let i = 0; i < w * h; i++) {
+    const hf = Math.abs(gray[i] - smooth[i]);
+    if (hf < mn) mn = hf;
+    if (hf > mx) mx = hf;
+  }
+  const range = Math.max(1, mx - mn);
   const out = new ImageData(w, h);
   for (let i = 0; i < w * h; i++) {
-    const v = 255 - Math.round(luma(data[i*4], data[i*4+1], data[i*4+2]));
+    const hf = Math.abs(gray[i] - smooth[i]);
+    const v = Math.round(((hf - mn) / range) * 255);
     out.data[i*4] = out.data[i*4+1] = out.data[i*4+2] = v;
     out.data[i*4+3] = 255;
   }
@@ -56,31 +199,38 @@ function makeAO(src: ImageData, radius: number): ImageData {
   const gray = new Float32Array(w * h);
   for (let i = 0; i < w * h; i++)
     gray[i] = luma(data[i*4], data[i*4+1], data[i*4+2]);
-  const blur = new Float32Array(w * h);
-  for (let y = 0; y < h; y++)
-    for (let x = 0; x < w; x++) {
-      let sum = 0, cnt = 0;
-      for (let dy = -radius; dy <= radius; dy++)
-        for (let dx = -radius; dx <= radius; dx++) {
-          sum += gray[Math.max(0,Math.min(h-1,y+dy))*w + Math.max(0,Math.min(w-1,x+dx))];
-          cnt++;
-        }
-      blur[y*w+x] = sum/cnt;
-    }
+  const blurred = gaussBlur(gray, w, h, radius * 4);
+  // AO = локальные впадины темнее среднего
+  let mn = 255, mx = 0;
+  for (let i = 0; i < w * h; i++) {
+    const diff = Math.max(0, blurred[i] - gray[i]);
+    if (diff < mn) mn = diff;
+    if (diff > mx) mx = diff;
+  }
+  const range = Math.max(1, mx - mn);
   const out = new ImageData(w, h);
   for (let i = 0; i < w * h; i++) {
-    const v = Math.max(0, Math.min(255, Math.round(blur[i] - (blur[i]-gray[i])*2)));
-    out.data[i*4] = out.data[i*4+1] = out.data[i*4+2] = v;
+    const diff = Math.max(0, blurred[i] - gray[i]);
+    const v = 255 - Math.round(((diff - mn) / range) * 200);
+    out.data[i*4] = out.data[i*4+1] = out.data[i*4+2] = Math.max(0, Math.min(255, v));
     out.data[i*4+3] = 255;
   }
   return out;
 }
 
 function makeGloss(src: ImageData): ImageData {
+  // Gloss = нормализованный luma с контрастом
   const { width: w, height: h, data } = src;
+  const gray = new Float32Array(w * h);
+  for (let i = 0; i < w * h; i++)
+    gray[i] = luma(data[i*4], data[i*4+1], data[i*4+2]);
+  // stretch contrast
+  let mn = 255, mx = 0;
+  for (let i = 0; i < w * h; i++) { if (gray[i] < mn) mn = gray[i]; if (gray[i] > mx) mx = gray[i]; }
+  const range = Math.max(1, mx - mn);
   const out = new ImageData(w, h);
   for (let i = 0; i < w * h; i++) {
-    const v = Math.round(luma(data[i*4], data[i*4+1], data[i*4+2]));
+    const v = Math.round(((gray[i] - mn) / range) * 255);
     out.data[i*4] = out.data[i*4+1] = out.data[i*4+2] = v;
     out.data[i*4+3] = 255;
   }
@@ -139,10 +289,11 @@ export default function Index() {
         const img = new Image();
         img.onload = () => {
           const c = document.createElement("canvas");
-          c.width = 512; c.height = 512;
+          c.width = img.naturalWidth; c.height = img.naturalHeight;
           const ctx = c.getContext("2d")!;
-          ctx.drawImage(img, 0, 0, 512, 512);
-          srcRef.current = ctx.getImageData(0, 0, 512, 512);
+          ctx.drawImage(img, 0, 0);
+          const raw = ctx.getImageData(0, 0, img.naturalWidth, img.naturalHeight);
+          srcRef.current = autoCropToSquare(raw);
           buildMaps(srcRef.current, normalStr, aoRadius);
         };
         img.src = `data:image/png;base64,${data}`;
