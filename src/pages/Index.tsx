@@ -237,6 +237,49 @@ function makeGloss(src: ImageData): ImageData {
   return out;
 }
 
+// Seamless: сдвиг на 50% + blend краёв через cos-маску
+function makeSeamless(src: ImageData): ImageData {
+  const { width: w, height: h, data } = src;
+  const out = new Uint8ClampedArray(w * h * 4);
+
+  const get = (x: number, y: number, ch: number) => {
+    const xi = ((x % w) + w) % w;
+    const yi = ((y % h) + h) % h;
+    return data[(yi * w + xi) * 4 + ch];
+  };
+
+  // Ширина зоны смешивания — 30% от размера
+  const blendW = Math.round(w * 0.30);
+  const blendH = Math.round(h * 0.30);
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      // Оригинал и сдвинутая версия
+      const sx = (x + w / 2) | 0;
+      const sy = (y + h / 2) | 0;
+
+      // Вес смешивания по X: края → shifted, центр → original
+      let wx = 1.0;
+      if (x < blendW) wx = 0.5 - 0.5 * Math.cos(Math.PI * x / blendW);
+      else if (x > w - blendW) wx = 0.5 + 0.5 * Math.cos(Math.PI * (x - (w - blendW)) / blendW);
+
+      let wy = 1.0;
+      if (y < blendH) wy = 0.5 - 0.5 * Math.cos(Math.PI * y / blendH);
+      else if (y > h - blendH) wy = 0.5 + 0.5 * Math.cos(Math.PI * (y - (h - blendH)) / blendH);
+
+      const t = Math.min(wx, wy);
+      const idx = (y * w + x) * 4;
+      for (let c = 0; c < 3; c++) {
+        const orig = get(x, y, c);
+        const shifted = get(sx, sy, c);
+        out[idx + c] = Math.round(orig * t + shifted * (1 - t));
+      }
+      out[idx + 3] = 255;
+    }
+  }
+  return new ImageData(out, w, h);
+}
+
 function toDataURL(id: ImageData): string {
   const c = document.createElement("canvas");
   c.width = id.width; c.height = id.height;
@@ -270,12 +313,13 @@ export default function Index() {
   const buildMaps = (img: ImageData, ns: number, aor: number) => {
     setStatus("processing");
     setTimeout(() => {
+      const seamless = makeSeamless(makeBaseColor(img));
       setUrls({
-        baseColor: toDataURL(makeBaseColor(img)),
-        normal:    toDataURL(makeNormal(img, ns)),
-        roughness: toDataURL(makeRoughness(img)),
-        ao:        toDataURL(makeAO(img, aor)),
-        gloss:     toDataURL(makeGloss(img)),
+        baseColor: toDataURL(seamless),
+        normal:    toDataURL(makeNormal(seamless, ns)),
+        roughness: toDataURL(makeRoughness(seamless)),
+        ao:        toDataURL(makeAO(seamless, aor)),
+        gloss:     toDataURL(makeGloss(seamless)),
       });
       setStatus("done");
     }, 30);
