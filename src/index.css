@@ -4,8 +4,15 @@
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
+    --background: 0 0% 6%;
+    --foreground: 0 0% 92%;
+
+    --crimson: 348 100% 35%;
+    --crimson-bright: 348 100% 50%;
+    --crimson-glow: 348 85% 60%;
+    --steel: 220 15% 18%;
+    --steel-light: 220 12% 28%;
+    --chrome: 220 10% 72%;
 
     --card: 0 0% 100%;
     --card-foreground: 222.2 84% 4.9%;
