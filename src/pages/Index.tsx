@@ -161,6 +161,18 @@ export default function Index() {
     a.href = url; a.download = `${active}.png`; a.click();
   };
 
+  const downloadAll = () => {
+    const keys = Object.keys(MAPS) as MapKey[];
+    keys.forEach((key, i) => {
+      const url = urls[key];
+      if (!url) return;
+      setTimeout(() => {
+        const a = document.createElement("a");
+        a.href = url; a.download = `pbr_${key}.png`; a.click();
+      }, i * 300);
+    });
+  };
+
   const ready = status === "done";
   const cur = urls[active];
 
@@ -225,6 +237,16 @@ export default function Index() {
               fontSize:"9px", letterSpacing:"0.14em", fontFamily:"'IBM Plex Mono',monospace",
             }}>
               ↓ СКАЧАТЬ {MAPS[active]?.tag}
+            </button>
+            <button onClick={downloadAll} disabled={!ready} style={{
+              width:"100%", marginTop:"6px", padding:"8px 0", textAlign:"center",
+              background: "transparent",
+              color: ready ? "rgba(198,40,40,0.8)" : "rgba(255,255,255,0.15)",
+              border:`1px solid ${ready ? "rgba(198,40,40,0.35)" : "rgba(255,255,255,0.06)"}`,
+              borderRadius:"3px", cursor: ready ? "pointer" : "default",
+              fontSize:"9px", letterSpacing:"0.14em", fontFamily:"'IBM Plex Mono',monospace",
+            }}>
+              ↓ ВСЕ 5 КАРТ
             </button>
             <div style={{ marginTop:"6px", fontSize:"8px", color:"rgba(255,255,255,0.18)", textAlign:"center", letterSpacing:"0.06em" }}>PNG 512×512</div>
           </div>
