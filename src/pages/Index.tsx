@@ -1,107 +1,10 @@
 import { useState, useEffect, useRef } from "react";
 
-// ─── Процедурная генерация Oxford Ripstop ─────────────────────────────────
-// Oxford Ripstop: plain weave с усиленными рёбрами через каждые N нитей.
-// Паттерн: ячейка 8px — 2 нити plain weave, затем 1 утолщённая нить (ripstop rib).
-// Цвет: тёмно-оливковый нейтральный, типичный для тактического/технического текстиля.
+const SOURCE_URL =
+  "https://cdn.poehali.dev/projects/5a15539d-2e23-46d4-9ae4-0b3d25a0b619/bucket/69833b61-01b5-42e0-a8d3-5b99d99bbf7c.png";
 
-function generateOxfordRipstop(size = 512): ImageData {
-  const c = document.createElement("canvas");
-  c.width = size; c.height = size;
-  const ctx = c.getContext("2d")!;
-
-  // Базовые цвета нити (тёмный оливково-серый)
-  const BASE_R = 72, BASE_G = 74, BASE_B = 68;
-
-  // Параметры переплетения
-  const THIN  = 3;   // px — тонкая нить
-  const THICK = 5;   // px — усиленная нить (ripstop rib)
-  const REPEAT = 4;  // нитей до следующего rib
-
-  // Строим таблицу: для каждой координаты → индекс нити и её тип (thin/thick)
-  function buildThreadMap(totalSize: number) {
-    const map: { idx: number; thick: boolean; pos: number; size: number }[] = [];
-    let pos = 0;
-    let idx = 0;
-    while (pos < totalSize) {
-      const isThick = (idx % REPEAT === 0);
-      const sz = isThick ? THICK : THIN;
-      map.push({ idx, thick: isThick, pos, size: sz });
-      pos += sz;
-      idx++;
-    }
-    return map;
-  }
-
-  const rowThreads = buildThreadMap(size);
-  const colThreads = buildThreadMap(size);
-
-  // Pixel buffer
-  const imgData = ctx.createImageData(size, size);
-  const px = imgData.data;
-
-  // Шум для микро-фактуры волокна
-  const noise = (x: number, y: number, scale: number) => {
-    const xi = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
-    const yi = Math.sin(x * 269.5 + y * 183.3 + scale) * 43758.5453;
-    return (xi - Math.floor(xi) + yi - Math.floor(yi)) * 0.5;
-  };
-
-  for (let y = 0; y < size; y++) {
-    // Найти нить по Y
-    const rowT = rowThreads.find(t => y >= t.pos && y < t.pos + t.size)!;
-    const rowLocal = y - rowT.pos; // позиция внутри нити
-
-    for (let x = 0; x < size; x++) {
-      const colT = colThreads.find(t => x >= t.pos && x < t.pos + t.size)!;
-      const colLocal = x - colT.pos;
-
-      // Plain weave: нить сверху определяется чётностью
-      // Ripstop: thick нити всегда на верхнем уровне
-      const rowOnTop = rowT.thick
-        ? true
-        : colT.thick
-          ? false
-          : (rowT.idx + colT.idx) % 2 === 0;
-
-      // Кривизна нити: нить выпуклая посередине
-      const rowCenter = rowT.size / 2;
-      const colCenter = colT.size / 2;
-      const rowCurve = 1 - Math.abs(rowLocal - rowCenter + 0.5) / rowCenter;
-      const colCurve = 1 - Math.abs(colLocal - colCenter + 0.5) / colCenter;
-
-      // Нить сверху — ярче, нить снизу — темнее
-      const topCurve  = rowOnTop ? rowCurve : colCurve;
-      const botCurve  = rowOnTop ? colCurve : rowCurve;
-
-      // Тень от переплетения
-      const shadow = (1 - botCurve) * 0.28;
-
-      // Микро-шум волокна
-      const n = noise(x, y, rowT.idx + colT.idx * 0.37) * 0.07 - 0.035;
-
-      // Блик на верхней нити
-      const highlight = topCurve * topCurve * (rowT.thick || colT.thick ? 0.18 : 0.10);
-
-      // Итоговая яркость
-      let brightness = 1.0 - shadow + highlight + n;
-
-      // Rib нити чуть темнее по тону (разное сырьё)
-      const ribDark = (rowT.thick || colT.thick) ? -0.06 : 0;
-      brightness += ribDark;
-
-      brightness = Math.max(0.5, Math.min(1.35, brightness));
-
-      const i = (y * size + x) * 4;
-      px[i]   = Math.round(Math.min(255, BASE_R * brightness));
-      px[i+1] = Math.round(Math.min(255, BASE_G * brightness));
-      px[i+2] = Math.round(Math.min(255, BASE_B * brightness));
-      px[i+3] = 255;
-    }
-  }
-
-  return imgData;
-}
+const PROXY_URL =
+  "https://functions.poehali.dev/358ebaa8-0b09-4cd9-bba4-f5ef4f0fcff6";
 
 // ─── PBR алгоритмы ────────────────────────────────────────────────────────
 
@@ -410,12 +313,13 @@ export default function Index() {
   const buildMaps = (img: ImageData, ns: number, aor: number) => {
     setStatus("processing");
     setTimeout(() => {
+      const seamless = makeSeamless(makeBaseColor(img));
       setUrls({
-        baseColor: toDataURL(img),
-        normal:    toDataURL(makeNormal(img, ns)),
-        roughness: toDataURL(makeRoughness(img)),
-        ao:        toDataURL(makeAO(img, aor)),
-        gloss:     toDataURL(makeGloss(img)),
+        baseColor: toDataURL(seamless),
+        normal:    toDataURL(makeNormal(seamless, ns)),
+        roughness: toDataURL(makeRoughness(seamless)),
+        ao:        toDataURL(makeAO(seamless, aor)),
+        gloss:     toDataURL(makeGloss(seamless)),
       });
       setStatus("done");
     }, 30);
@@ -423,10 +327,22 @@ export default function Index() {
 
   useEffect(() => {
     setStatus("loading");
-    setTimeout(() => {
-      srcRef.current = generateOxfordRipstop(512);
-      buildMaps(srcRef.current, normalStr, aoRadius);
-    }, 20);
+    fetch(`${PROXY_URL}?url=${encodeURIComponent(SOURCE_URL)}`)
+      .then(r => r.json())
+      .then(({ data }: { data: string }) => {
+        const img = new Image();
+        img.onload = () => {
+          const c = document.createElement("canvas");
+          c.width = img.naturalWidth; c.height = img.naturalHeight;
+          const ctx = c.getContext("2d")!;
+          ctx.drawImage(img, 0, 0);
+          const raw = ctx.getImageData(0, 0, img.naturalWidth, img.naturalHeight);
+          srcRef.current = autoCropToSquare(raw);
+          buildMaps(srcRef.current, normalStr, aoRadius);
+        };
+        img.src = `data:image/png;base64,${data}`;
+      })
+      .catch(() => setStatus("error"));
   }, []);
 
   const recompute = (ns: number, aor: number) => {
