@@ -1,267 +1,291 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 
-const SOURCE_URL = "https://cdn.poehali.dev/projects/5a15539d-2e23-46d4-9ae4-0b3d25a0b619/bucket/69833b61-01b5-42e0-a8d3-5b99d99bbf7c.png";
+// Исходная текстура — оригинальный образец
+const SOURCE_URL =
+  "https://cdn.poehali.dev/projects/5a15539d-2e23-46d4-9ae4-0b3d25a0b619/bucket/69833b61-01b5-42e0-a8d3-5b99d99bbf7c.png";
 
-type MapKey = "baseColor" | "normal" | "roughness" | "ao" | "metallic";
+// ─── алгоритмы PBR-карт ────────────────────────────────────────────────────
 
-const MAP_META: Record<MapKey, { label: string; tag: string; desc: string }> = {
-  baseColor: { label: "Base Color", tag: "ALBEDO", desc: "Оригинал — исходная текстура" },
-  normal:    { label: "Normal Map", tag: "NORMAL", desc: "Рельеф поверхности (Sobel filter)" },
-  roughness: { label: "Roughness",  tag: "ROUGH",  desc: "Инверсия яркости — тёмное = гладкое" },
-  ao:        { label: "Ambient Occlusion", tag: "AO", desc: "Затенение впадин (blur + darken)" },
-  metallic:  { label: "Metallic",   tag: "METAL",  desc: "Металличность по насыщенности канала" },
-};
-
-const PBR_SPECS = [
-  { label: "Источник", value: "Оригинал 1.png" },
-  { label: "Движок",   value: "Rhino / Cycles / Vray" },
-  { label: "Алгоритм", value: "Canvas CPU processing" },
-  { label: "Normal",   value: "Sobel edge detection" },
-  { label: "Rough",    value: "Inverted luminance" },
-  { label: "AO",       value: "Blur + contrast darken" },
-];
-
-// ─── алгоритмы генерации карт ────────────────────────────────────────────────
-
-function getGrayscale(r: number, g: number, b: number): number {
+function toLuma(r: number, g: number, b: number) {
   return 0.2126 * r + 0.7152 * g + 0.0722 * b;
 }
 
-function buildGrayscaleArray(src: ImageData): Float32Array {
-  const gray = new Float32Array(src.width * src.height);
-  for (let i = 0; i < gray.length; i++) {
-    gray[i] = getGrayscale(src.data[i * 4], src.data[i * 4 + 1], src.data[i * 4 + 2]);
-  }
-  return gray;
+/** Base Color — оригинал без изменений (просто копия) */
+function makeBaseColor(src: ImageData): ImageData {
+  return new ImageData(new Uint8ClampedArray(src.data), src.width, src.height);
 }
 
-function sampleGray(gray: Float32Array, w: number, h: number, x: number, y: number): number {
-  x = Math.max(0, Math.min(w - 1, x));
-  y = Math.max(0, Math.min(h - 1, y));
-  return gray[y * w + x];
-}
-
-function generateNormalMap(src: ImageData, strength = 6): ImageData {
-  const { width: w, height: h } = src;
+/** Normal Map — оператор Собеля по яркости */
+function makeNormal(src: ImageData, strength: number): ImageData {
+  const { width: w, height: h, data } = src;
   const out = new ImageData(w, h);
-  const gray = buildGrayscaleArray(src);
+  const gray = new Float32Array(w * h);
+  for (let i = 0; i < w * h; i++)
+    gray[i] = toLuma(data[i * 4], data[i * 4 + 1], data[i * 4 + 2]);
+
+  const g = (x: number, y: number) =>
+    gray[Math.max(0, Math.min(h - 1, y)) * w + Math.max(0, Math.min(w - 1, x))];
+
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
-      const tl = sampleGray(gray, w, h, x - 1, y - 1);
-      const t  = sampleGray(gray, w, h, x,     y - 1);
-      const tr = sampleGray(gray, w, h, x + 1, y - 1);
-      const l  = sampleGray(gray, w, h, x - 1, y);
-      const r  = sampleGray(gray, w, h, x + 1, y);
-      const bl = sampleGray(gray, w, h, x - 1, y + 1);
-      const b  = sampleGray(gray, w, h, x,     y + 1);
-      const br = sampleGray(gray, w, h, x + 1, y + 1);
-      const dX = (tr + 2 * r + br - tl - 2 * l - bl) / 255 * strength;
-      const dY = (bl + 2 * b + br - tl - 2 * t - tr) / 255 * strength;
-      const dZ = 1.0;
-      const len = Math.sqrt(dX * dX + dY * dY + dZ * dZ);
+      const dx =
+        -g(x - 1, y - 1) - 2 * g(x - 1, y) - g(x - 1, y + 1) +
+         g(x + 1, y - 1) + 2 * g(x + 1, y) + g(x + 1, y + 1);
+      const dy =
+        -g(x - 1, y - 1) - 2 * g(x, y - 1) - g(x + 1, y - 1) +
+         g(x - 1, y + 1) + 2 * g(x, y + 1) + g(x + 1, y + 1);
+      const nx = (dx / 255) * strength;
+      const ny = (dy / 255) * strength;
+      const nz = 1.0;
+      const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
       const i = (y * w + x) * 4;
-      out.data[i]     = Math.round(((dX / len) * 0.5 + 0.5) * 255);
-      out.data[i + 1] = Math.round(((dY / len) * 0.5 + 0.5) * 255);
-      out.data[i + 2] = Math.round(((dZ / len) * 0.5 + 0.5) * 255);
+      out.data[i]     = Math.round((nx / len * 0.5 + 0.5) * 255);
+      out.data[i + 1] = Math.round((ny / len * 0.5 + 0.5) * 255);
+      out.data[i + 2] = Math.round((nz / len * 0.5 + 0.5) * 255);
       out.data[i + 3] = 255;
     }
   }
   return out;
 }
 
-function generateRoughnessMap(src: ImageData): ImageData {
-  const { width: w, height: h } = src;
+/** Roughness — инверсия яркости: тёмные участки = гладкие, светлые = матовые */
+function makeRoughness(src: ImageData): ImageData {
+  const { width: w, height: h, data } = src;
   const out = new ImageData(w, h);
   for (let i = 0; i < w * h; i++) {
-    const r = src.data[i * 4], g = src.data[i * 4 + 1], b = src.data[i * 4 + 2];
-    const lum = getGrayscale(r, g, b);
-    const rough = 255 - lum;
-    out.data[i * 4]     = rough;
-    out.data[i * 4 + 1] = rough;
-    out.data[i * 4 + 2] = rough;
+    const v = 255 - Math.round(toLuma(data[i * 4], data[i * 4 + 1], data[i * 4 + 2]));
+    out.data[i * 4] = out.data[i * 4 + 1] = out.data[i * 4 + 2] = v;
     out.data[i * 4 + 3] = 255;
   }
   return out;
 }
 
-function generateAOMap(src: ImageData, radius = 4): ImageData {
-  const { width: w, height: h } = src;
-  const gray = buildGrayscaleArray(src);
-  const blurred = new Float32Array(w * h);
+/** AO — локальное затенение: впадины темнее гребней */
+function makeAO(src: ImageData, radius: number): ImageData {
+  const { width: w, height: h, data } = src;
+  const gray = new Float32Array(w * h);
+  for (let i = 0; i < w * h; i++)
+    gray[i] = toLuma(data[i * 4], data[i * 4 + 1], data[i * 4 + 2]);
+
+  const blur = new Float32Array(w * h);
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       let sum = 0, cnt = 0;
-      for (let dy = -radius; dy <= radius; dy++) {
+      for (let dy = -radius; dy <= radius; dy++)
         for (let dx = -radius; dx <= radius; dx++) {
-          sum += sampleGray(gray, w, h, x + dx, y + dy);
-          cnt++;
+          const nx = Math.max(0, Math.min(w - 1, x + dx));
+          const ny = Math.max(0, Math.min(h - 1, y + dy));
+          sum += gray[ny * w + nx]; cnt++;
         }
-      }
-      blurred[y * w + x] = sum / cnt;
+      blur[y * w + x] = sum / cnt;
     }
   }
+
   const out = new ImageData(w, h);
   for (let i = 0; i < w * h; i++) {
-    const diff = blurred[i] - gray[i];
-    const ao = Math.max(0, Math.min(255, 128 + diff * 1.8));
-    out.data[i * 4]     = ao;
-    out.data[i * 4 + 1] = ao;
-    out.data[i * 4 + 2] = ao;
+    const v = Math.max(0, Math.min(255, Math.round(blur[i] - (blur[i] - gray[i]) * 2)));
+    out.data[i * 4] = out.data[i * 4 + 1] = out.data[i * 4 + 2] = v;
     out.data[i * 4 + 3] = 255;
   }
   return out;
 }
 
-function generateMetallicMap(src: ImageData): ImageData {
-  const { width: w, height: h } = src;
+/** Glossiness (Specular) — насыщенность канала, инвертированная Roughness */
+function makeGloss(src: ImageData): ImageData {
+  const { width: w, height: h, data } = src;
   const out = new ImageData(w, h);
   for (let i = 0; i < w * h; i++) {
-    const r = src.data[i * 4], g = src.data[i * 4 + 1], b = src.data[i * 4 + 2];
-    const max = Math.max(r, g, b), min = Math.min(r, g, b);
-    const sat = max === 0 ? 0 : (max - min) / max;
-    const metal = Math.round(sat * 255);
-    out.data[i * 4]     = metal;
-    out.data[i * 4 + 1] = metal;
-    out.data[i * 4 + 2] = metal;
+    const r = data[i * 4], g = data[i * 4 + 1], b = data[i * 4 + 2];
+    const luma = toLuma(r, g, b);
+    // Глянец = яркость (светлые гребни блестят)
+    const v = Math.round(luma);
+    out.data[i * 4] = out.data[i * 4 + 1] = out.data[i * 4 + 2] = v;
     out.data[i * 4 + 3] = 255;
   }
   return out;
 }
 
-// ─── компонент ───────────────────────────────────────────────────────────────
+function imageDataToURL(id: ImageData): string {
+  const c = document.createElement("canvas");
+  c.width = id.width; c.height = id.height;
+  c.getContext("2d")!.putImageData(id, 0, 0);
+  return c.toDataURL("image/png");
+}
+
+// ─── типы ─────────────────────────────────────────────────────────────────
+
+type MapKey = "baseColor" | "normal" | "roughness" | "ao" | "gloss";
+
+interface MapInfo {
+  label: string;
+  tag: string;
+  desc: string;
+  hint: string;
+}
+
+const MAP_INFO: Record<MapKey, MapInfo> = {
+  baseColor: {
+    label: "Base Color",
+    tag: "ALBEDO",
+    desc: "Цвет поверхности — оригинал без изменений",
+    hint: "Подключается в слот Diffuse / Base Color",
+  },
+  normal: {
+    label: "Normal Map",
+    tag: "NORMAL",
+    desc: "Карта рельефа, вычислена оператором Собеля",
+    hint: "Слот Normal / Bump в рендерере",
+  },
+  roughness: {
+    label: "Roughness",
+    tag: "ROUGH",
+    desc: "Шероховатость: светлое = матово, тёмное = гладко",
+    hint: "Слот Roughness / Glossiness (инверт.)",
+  },
+  ao: {
+    label: "Ambient Occlusion",
+    tag: "AO",
+    desc: "Затенение впадин — глубина рельефа",
+    hint: "Multiply поверх Diffuse или слот AO",
+  },
+  gloss: {
+    label: "Glossiness",
+    tag: "GLOSS",
+    desc: "Блеск поверхности — яркость гребней",
+    hint: "Слот Specular / Reflection в Vray/Cycles",
+  },
+};
+
+// ─── компонент ────────────────────────────────────────────────────────────
 
 export default function Index() {
-  const [activeMap, setActiveMap] = useState<MapKey>("baseColor");
-  const [tileCount, setTileCount] = useState(1);
-  const [zoom, setZoom] = useState(1);
-  const [normalStrength, setNormalStrength] = useState(6);
-  const [maps, setMaps] = useState<Record<MapKey, string | null>>({
-    baseColor: SOURCE_URL,
-    normal: null,
-    roughness: null,
-    ao: null,
-    metallic: null,
-  });
-  const [progress, setProgress] = useState<string | null>("Загружаю оригинал...");
-  const srcRef = useRef<ImageData | null>(null);
+  const [active, setActive] = useState<MapKey>("baseColor");
+  const [urls, setUrls] = useState<Partial<Record<MapKey, string>>>({});
+  const [status, setStatus] = useState<"loading" | "processing" | "done" | "error">("loading");
+  const [normalStr, setNormalStr] = useState(8);
+  const [aoRadius, setAoRadius] = useState(4);
+  const [tiling, setTiling] = useState(1);
+  const srcData = useRef<ImageData | null>(null);
 
-  const processAll = useCallback((imgData: ImageData, strength: number) => {
-    setProgress("Генерирую Normal Map...");
+  // Пересчёт всех карт из сырых данных
+  const buildMaps = (img: ImageData, ns: number, aor: number) => {
+    setStatus("processing");
     setTimeout(() => {
-      const normalData = generateNormalMap(imgData, strength);
-      const roughData  = generateRoughnessMap(imgData);
-      const aoData     = generateAOMap(imgData);
-      const metalData  = generateMetallicMap(imgData);
-
-      const toDataURL = (id: ImageData) => {
-        const c = document.createElement("canvas");
-        c.width = id.width; c.height = id.height;
-        c.getContext("2d")!.putImageData(id, 0, 0);
-        return c.toDataURL("image/png");
-      };
-
-      setMaps({
-        baseColor: SOURCE_URL,
-        normal:    toDataURL(normalData),
-        roughness: toDataURL(roughData),
-        ao:        toDataURL(aoData),
-        metallic:  toDataURL(metalData),
+      setUrls({
+        baseColor: imageDataToURL(makeBaseColor(img)),
+        normal:    imageDataToURL(makeNormal(img, ns)),
+        roughness: imageDataToURL(makeRoughness(img)),
+        ao:        imageDataToURL(makeAO(img, aor)),
+        gloss:     imageDataToURL(makeGloss(img)),
       });
-      setProgress(null);
-    }, 50);
-  }, []);
+      setStatus("done");
+    }, 30);
+  };
 
-  // Загрузка через fetch → blob (обход CORS для Canvas getImageData)
+  // Загрузка исходника
   useEffect(() => {
-    setProgress("Загружаю оригинал...");
+    setStatus("loading");
     fetch(SOURCE_URL)
-      .then((r) => r.blob())
-      .then((blob) => {
+      .then(r => r.blob())
+      .then(blob => {
         const blobUrl = URL.createObjectURL(blob);
         const img = new Image();
         img.onload = () => {
           const SIZE = 512;
           const c = document.createElement("canvas");
           c.width = SIZE; c.height = SIZE;
-          c.getContext("2d")!.drawImage(img, 0, 0, SIZE, SIZE);
-          const imgData = c.getContext("2d")!.getImageData(0, 0, SIZE, SIZE);
-          srcRef.current = imgData;
+          const ctx = c.getContext("2d")!;
+          ctx.drawImage(img, 0, 0, SIZE, SIZE);
+          srcData.current = ctx.getImageData(0, 0, SIZE, SIZE);
           URL.revokeObjectURL(blobUrl);
-          processAll(imgData, normalStrength);
+          buildMaps(srcData.current, normalStr, aoRadius);
         };
-        img.onerror = () => setProgress("Ошибка загрузки");
+        img.onerror = () => setStatus("error");
         img.src = blobUrl;
       })
-      .catch(() => setProgress("Ошибка загрузки"));
+      .catch(() => setStatus("error"));
   }, []);
 
-  const handleStrengthChange = (val: number) => {
-    setNormalStrength(val);
-    if (srcRef.current) {
-      setProgress("Пересчитываю Normal Map...");
-      setTimeout(() => {
-        const normalData = generateNormalMap(srcRef.current!, val);
-        const c = document.createElement("canvas");
-        c.width = normalData.width; c.height = normalData.height;
-        c.getContext("2d")!.putImageData(normalData, 0, 0);
-        setMaps(prev => ({ ...prev, normal: c.toDataURL("image/png") }));
-        setProgress(null);
-      }, 20);
-    }
+  const recompute = (ns: number, aor: number) => {
+    if (srcData.current) buildMaps(srcData.current, ns, aor);
   };
 
-  const currentUrl = maps[activeMap];
+  const download = () => {
+    const url = urls[active];
+    if (!url) return;
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${active}.png`;
+    a.click();
+  };
+
+  const isReady = status === "done";
+  const currentUrl = urls[active];
 
   return (
-    <div className="min-h-screen text-white overflow-hidden" style={{ background: "#0e0e0f", fontFamily: "'Rajdhani', sans-serif", height: "100vh", display: "flex", flexDirection: "column" }}>
-      {/* Шапка */}
-      <header className="flex-shrink-0 border-b flex items-center justify-between px-6 py-3"
-        style={{ borderColor: "rgba(198,40,40,0.3)", background: "#0e0e0f" }}>
-        <div className="flex items-center gap-3">
-          <div className="w-2 h-2 rounded-full animate-pulse" style={{ background: "#C62828", boxShadow: "0 0 8px #C62828" }} />
-          <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: "11px", color: "rgba(198,40,40,0.9)", letterSpacing: "0.15em" }}>
-            PBR MAP GENERATOR
-          </span>
+    <div style={{
+      height: "100vh", display: "flex", flexDirection: "column",
+      background: "#111", color: "#fff",
+      fontFamily: "'IBM Plex Mono', monospace",
+    }}>
+
+      {/* ── ШАПКА ── */}
+      <header style={{
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        padding: "0 24px", height: "48px", flexShrink: 0,
+        borderBottom: "1px solid rgba(255,255,255,0.08)",
+        background: "#0d0d0d",
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+          <div style={{ width: "7px", height: "7px", borderRadius: "50%", background: "#c62828", boxShadow: "0 0 6px #c62828" }} />
+          <span style={{ fontSize: "11px", letterSpacing: "0.18em", color: "#c62828" }}>PBR MAP GENERATOR</span>
         </div>
-        <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: "10px", color: "rgba(255,255,255,0.25)", letterSpacing: "0.1em" }}>
-          ALGORITHMIC · CPU CANVAS · 5 MAPS
+        <div style={{ fontSize: "10px", color: "rgba(255,255,255,0.22)", letterSpacing: "0.12em" }}>
+          BASE COLOR · NORMAL · ROUGHNESS · AO · GLOSS
         </div>
-        {progress && (
-          <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: "9px", color: "#C62828", letterSpacing: "0.12em", display: "flex", alignItems: "center", gap: "8px" }}>
-            <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: "#C62828" }} />
-            {progress}
-          </div>
-        )}
-        {!progress && (
-          <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: "9px", color: "rgba(100,200,100,0.8)", letterSpacing: "0.12em" }}>
-            ✓ 5 MAPS READY
-          </div>
-        )}
+        <div style={{ fontSize: "10px", letterSpacing: "0.1em", color: status === "done" ? "rgba(100,220,100,0.8)" : status === "error" ? "#f44" : "#c62828" }}>
+          {status === "loading" && "● ЗАГРУЗКА..."}
+          {status === "processing" && "● ВЫЧИСЛЕНИЕ..."}
+          {status === "done" && "✓ ГОТОВО — 5 КАРТ"}
+          {status === "error" && "✕ ОШИБКА ЗАГРУЗКИ"}
+        </div>
       </header>
 
-      <div className="flex flex-1 overflow-hidden">
-        {/* Левая панель */}
-        <aside className="w-52 flex-shrink-0 flex flex-col border-r overflow-hidden"
-          style={{ borderColor: "rgba(255,255,255,0.06)", background: "#111113" }}>
-          <div className="px-4 py-3 border-b" style={{ borderColor: "rgba(255,255,255,0.06)" }}>
-            <p style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: "9px", letterSpacing: "0.2em", color: "rgba(255,255,255,0.3)" }}>КАРТЫ</p>
+      {/* ── ТЕЛО ── */}
+      <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
+
+        {/* ── ЛЕВАЯ ПАНЕЛЬ: список карт ── */}
+        <aside style={{
+          width: "200px", flexShrink: 0,
+          borderRight: "1px solid rgba(255,255,255,0.07)",
+          background: "#0d0d0d",
+          display: "flex", flexDirection: "column",
+          overflow: "hidden",
+        }}>
+          <div style={{ padding: "10px 14px 6px", fontSize: "9px", letterSpacing: "0.22em", color: "rgba(255,255,255,0.28)" }}>
+            PBR MAPS
           </div>
-          <div className="flex-1 overflow-auto py-1">
-            {(Object.keys(MAP_META) as MapKey[]).map((key) => {
-              const m = MAP_META[key];
-              const active = activeMap === key;
-              const url = maps[key];
+          <div style={{ flex: 1, overflowY: "auto" }}>
+            {(Object.keys(MAP_INFO) as MapKey[]).map(key => {
+              const m = MAP_INFO[key];
+              const sel = active === key;
               return (
-                <button key={key} onClick={() => setActiveMap(key)}
-                  className="w-full text-left transition-all duration-150"
-                  style={{ background: active ? "rgba(198,40,40,0.15)" : "transparent", borderLeft: active ? "2px solid #C62828" : "2px solid transparent", padding: "8px 14px" }}>
-                  <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: "9px", letterSpacing: "0.15em", color: active ? "#C62828" : "rgba(255,255,255,0.3)" }}>{m.tag}</span>
-                  <p style={{ fontSize: "13px", fontWeight: active ? 600 : 400, color: active ? "#fff" : "rgba(255,255,255,0.5)", lineHeight: 1.2, marginTop: "2px" }}>{m.label}</p>
-                  <div className="mt-1.5 rounded overflow-hidden" style={{ height: "44px", opacity: active ? 1 : 0.55, background: "#0a0a0b" }}>
-                    {url
-                      ? <img src={url} alt={m.label} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                <button key={key} onClick={() => setActive(key)} style={{
+                  width: "100%", textAlign: "left", padding: "9px 14px",
+                  background: sel ? "rgba(198,40,40,0.13)" : "transparent",
+                  borderLeft: sel ? "2px solid #c62828" : "2px solid transparent",
+                  border: "none", cursor: "pointer",
+                  borderBottom: "1px solid rgba(255,255,255,0.04)",
+                  transition: "all 0.12s",
+                }}>
+                  <div style={{ fontSize: "8px", letterSpacing: "0.18em", color: sel ? "#c62828" : "rgba(255,255,255,0.28)", marginBottom: "2px" }}>{m.tag}</div>
+                  <div style={{ fontSize: "13px", fontWeight: sel ? 600 : 400, color: sel ? "#fff" : "rgba(255,255,255,0.52)", lineHeight: 1.2, fontFamily: "'Rajdhani', sans-serif" }}>{m.label}</div>
+                  {/* превью */}
+                  <div style={{ marginTop: "6px", height: "42px", background: "#0a0a0b", borderRadius: "2px", overflow: "hidden" }}>
+                    {urls[key]
+                      ? <img src={urls[key]} style={{ width: "100%", height: "100%", objectFit: "cover", opacity: sel ? 1 : 0.55 }} />
                       : <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                          <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: "rgba(198,40,40,0.5)" }} />
+                          <div style={{ width: "6px", height: "6px", borderRadius: "50%", background: "rgba(198,40,40,0.35)" }} />
                         </div>
                     }
                   </div>
@@ -269,194 +293,206 @@ export default function Index() {
               );
             })}
           </div>
-
-          {/* Спецификации */}
-          <div className="border-t p-4 flex-shrink-0" style={{ borderColor: "rgba(255,255,255,0.06)" }}>
-            <p className="mb-2" style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: "9px", letterSpacing: "0.2em", color: "rgba(255,255,255,0.3)" }}>INFO</p>
-            <div className="space-y-1">
-              {PBR_SPECS.map((s) => (
-                <div key={s.label}>
-                  <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: "8px", color: "rgba(198,40,40,0.7)", letterSpacing: "0.1em" }}>{s.label.toUpperCase()}</span>
-                  <p style={{ fontSize: "10px", color: "rgba(255,255,255,0.5)", lineHeight: 1.3 }}>{s.value}</p>
-                </div>
-              ))}
+          {/* Кнопка скачать */}
+          <div style={{ padding: "12px", borderTop: "1px solid rgba(255,255,255,0.07)", flexShrink: 0 }}>
+            <button onClick={download} disabled={!isReady} style={{
+              width: "100%", padding: "8px 0", textAlign: "center",
+              background: isReady ? "#c62828" : "rgba(255,255,255,0.05)",
+              color: isReady ? "#fff" : "rgba(255,255,255,0.2)",
+              border: `1px solid ${isReady ? "#c62828" : "rgba(255,255,255,0.08)"}`,
+              borderRadius: "3px", cursor: isReady ? "pointer" : "default",
+              fontSize: "9px", letterSpacing: "0.14em",
+              fontFamily: "'IBM Plex Mono', monospace",
+              transition: "all 0.15s",
+            }}>
+              ↓ СКАЧАТЬ {MAP_INFO[active]?.tag}
+            </button>
+            <div style={{ marginTop: "6px", fontSize: "8px", color: "rgba(255,255,255,0.18)", textAlign: "center", lineHeight: 1.5, letterSpacing: "0.06em" }}>
+              PNG 512×512
             </div>
           </div>
         </aside>
 
-        {/* Основной viewport */}
-        <main className="flex-1 flex flex-col overflow-hidden">
-          <div className="flex-1 relative flex items-center justify-center overflow-hidden" style={{ background: "#0a0a0b" }}>
-            {/* Сетка */}
-            <div className="absolute inset-0 opacity-[0.07]" style={{
-              backgroundImage: `linear-gradient(rgba(198,40,40,0.5) 1px, transparent 1px), linear-gradient(90deg, rgba(198,40,40,0.5) 1px, transparent 1px)`,
+        {/* ── ЦЕНТР: просмотр карты ── */}
+        <main style={{
+          flex: 1, display: "flex", flexDirection: "column",
+          background: "#0a0a0b", overflow: "hidden",
+        }}>
+          {/* viewport */}
+          <div style={{
+            flex: 1, position: "relative",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            overflow: "hidden",
+          }}>
+            {/* сетка */}
+            <div style={{
+              position: "absolute", inset: 0, opacity: 0.06,
+              backgroundImage: "linear-gradient(rgba(198,40,40,0.5) 1px,transparent 1px),linear-gradient(90deg,rgba(198,40,40,0.5) 1px,transparent 1px)",
               backgroundSize: "40px 40px",
             }} />
 
-            {progress ? (
-              <div className="flex flex-col items-center gap-4">
-                <div className="w-8 h-8 rounded-full border-2 border-transparent animate-spin"
-                  style={{ borderTopColor: "#C62828", borderRightColor: "rgba(198,40,40,0.3)" }} />
-                <p style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: "11px", color: "rgba(198,40,40,0.7)", letterSpacing: "0.15em" }}>
-                  {progress}
-                </p>
+            {status === "loading" || status === "processing" ? (
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "16px" }}>
+                <div style={{
+                  width: "32px", height: "32px", borderRadius: "50%",
+                  border: "2px solid rgba(198,40,40,0.2)",
+                  borderTopColor: "#c62828",
+                  animation: "spin 0.8s linear infinite",
+                }} />
+                <div style={{ fontSize: "10px", color: "rgba(198,40,40,0.6)", letterSpacing: "0.15em" }}>
+                  {status === "loading" ? "ЗАГРУЗКА ОРИГИНАЛА..." : "ВЫЧИСЛЕНИЕ КАРТ..."}
+                </div>
               </div>
+            ) : status === "error" ? (
+              <div style={{ fontSize: "11px", color: "#f44", letterSpacing: "0.12em" }}>ОШИБКА ЗАГРУЗКИ ФАЙЛА</div>
             ) : (
-              <div style={{ transform: `scale(${zoom})`, transition: "transform 0.3s ease" }}>
-                <div className="relative overflow-hidden" style={{
-                  width: "420px", height: "420px",
-                  outline: "1px solid rgba(198,40,40,0.4)",
-                  boxShadow: "0 20px 80px rgba(0,0,0,0.8)",
+              <div>
+                {/* Тайловый превью */}
+                <div style={{
+                  width: "440px", height: "440px",
+                  outline: "1px solid rgba(198,40,40,0.35)",
+                  boxShadow: "0 16px 60px rgba(0,0,0,0.75)",
+                  overflow: "hidden", position: "relative",
                 }}>
                   {currentUrl && (
                     <div style={{
                       width: "100%", height: "100%",
                       backgroundImage: `url(${currentUrl})`,
-                      backgroundSize: `${100 / tileCount}%`,
+                      backgroundSize: `${100 / tiling}%`,
                       backgroundRepeat: "repeat",
                     }} />
                   )}
-                  {/* Угловые метки */}
-                  {(["tl","tr","bl","br"] as const).map((pos) => (
-                    <div key={pos} className="absolute w-4 h-4" style={{
-                      top: pos[0]==="t"?"6px":"auto", bottom: pos[0]==="b"?"6px":"auto",
-                      left: pos[1]==="l"?"6px":"auto", right: pos[1]==="r"?"6px":"auto",
-                      borderTop: pos[0]==="t"?"1px solid rgba(198,40,40,0.7)":"none",
-                      borderBottom: pos[0]==="b"?"1px solid rgba(198,40,40,0.7)":"none",
-                      borderLeft: pos[1]==="l"?"1px solid rgba(198,40,40,0.7)":"none",
-                      borderRight: pos[1]==="r"?"1px solid rgba(198,40,40,0.7)":"none",
+                  {/* угловые метки */}
+                  {(["tl","tr","bl","br"] as const).map(p => (
+                    <div key={p} style={{
+                      position: "absolute", width: "14px", height: "14px",
+                      top: p[0]==="t" ? "6px" : "auto", bottom: p[0]==="b" ? "6px" : "auto",
+                      left: p[1]==="l" ? "6px" : "auto", right: p[1]==="r" ? "6px" : "auto",
+                      borderTop: p[0]==="t" ? "1px solid rgba(198,40,40,0.6)" : "none",
+                      borderBottom: p[0]==="b" ? "1px solid rgba(198,40,40,0.6)" : "none",
+                      borderLeft: p[1]==="l" ? "1px solid rgba(198,40,40,0.6)" : "none",
+                      borderRight: p[1]==="r" ? "1px solid rgba(198,40,40,0.6)" : "none",
                     }} />
                   ))}
                 </div>
-                <div className="mt-3 flex items-center justify-between" style={{ width: "420px" }}>
-                  <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: "10px", color: "rgba(198,40,40,0.8)", letterSpacing: "0.15em" }}>
-                    {MAP_META[activeMap].tag}
+                {/* подпись */}
+                <div style={{ marginTop: "10px", display: "flex", justifyContent: "space-between", width: "440px" }}>
+                  <span style={{ fontSize: "10px", color: "rgba(198,40,40,0.8)", letterSpacing: "0.15em" }}>
+                    {MAP_INFO[active].tag}
                   </span>
-                  <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: "10px", color: "rgba(255,255,255,0.3)", letterSpacing: "0.1em" }}>
-                    512×512 · {tileCount}×{tileCount} TILE
+                  <span style={{ fontSize: "10px", color: "rgba(255,255,255,0.25)", letterSpacing: "0.08em" }}>
+                    512×512 · TILE {tiling}×{tiling}
                   </span>
                 </div>
-                <p style={{ fontSize: "12px", color: "rgba(255,255,255,0.3)", marginTop: "3px" }}>
-                  {MAP_META[activeMap].desc}
-                </p>
+                <div style={{ marginTop: "4px", fontSize: "11px", color: "rgba(255,255,255,0.3)", fontFamily: "'Rajdhani',sans-serif" }}>
+                  {MAP_INFO[active].desc}
+                </div>
+                <div style={{ marginTop: "2px", fontSize: "10px", color: "rgba(198,40,40,0.5)", letterSpacing: "0.04em" }}>
+                  {MAP_INFO[active].hint}
+                </div>
               </div>
             )}
 
-            <div className="absolute top-4 left-4" style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: "10px", color: "rgba(255,255,255,0.12)", letterSpacing: "0.1em" }}>
-              VIEWPORT
-            </div>
+            <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
           </div>
 
-          {/* Панель управления */}
-          <div className="flex-shrink-0 border-t flex items-stretch"
-            style={{ borderColor: "rgba(255,255,255,0.06)", background: "#111113", minHeight: "110px" }}>
-
-            {/* Normal strength — только для normal map */}
-            <div className="flex-1 p-4 border-r" style={{ borderColor: "rgba(255,255,255,0.06)", opacity: activeMap === "normal" ? 1 : 0.3 }}>
-              <label style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: "9px", letterSpacing: "0.2em", color: "rgba(198,40,40,0.7)", display: "block", marginBottom: "8px" }}>
-                NORMAL STRENGTH — {normalStrength}
+          {/* ── ПАНЕЛЬ ПАРАМЕТРОВ ── */}
+          <div style={{
+            flexShrink: 0, display: "flex",
+            borderTop: "1px solid rgba(255,255,255,0.07)",
+            background: "#0d0d0d", minHeight: "100px",
+          }}>
+            {/* Normal Strength */}
+            <div style={{ flex: 1, padding: "14px 18px", borderRight: "1px solid rgba(255,255,255,0.06)" }}>
+              <label style={{ display: "block", fontSize: "9px", letterSpacing: "0.18em", color: "rgba(198,40,40,0.65)", marginBottom: "8px" }}>
+                NORMAL STRENGTH — {normalStr}
               </label>
-              <input type="range" min={1} max={20} step={1} value={normalStrength}
-                onChange={(e) => handleStrengthChange(Number(e.target.value))}
-                className="w-full" style={{ accentColor: "#C62828" }}
-                disabled={activeMap !== "normal"} />
-              <div className="mt-1 flex justify-between" style={{ fontSize: "9px", color: "rgba(255,255,255,0.2)", fontFamily: "'IBM Plex Mono', monospace" }}>
-                <span>СЛАБЫЙ</span><span>——</span><span>СИЛЬНЫЙ</span>
+              <input type="range" min={1} max={20} step={1} value={normalStr}
+                style={{ width: "100%", accentColor: "#c62828" }}
+                onChange={e => { const v = Number(e.target.value); setNormalStr(v); recompute(v, aoRadius); }} />
+              <div style={{ display: "flex", justifyContent: "space-between", marginTop: "4px", fontSize: "8px", color: "rgba(255,255,255,0.18)" }}>
+                <span>СЛАБО</span><span>СИЛЬНО</span>
               </div>
             </div>
 
-            {/* Zoom */}
-            <div className="flex-1 p-4 border-r" style={{ borderColor: "rgba(255,255,255,0.06)" }}>
-              <label style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: "9px", letterSpacing: "0.2em", color: "rgba(198,40,40,0.7)", display: "block", marginBottom: "8px" }}>
-                ZOOM — {zoom.toFixed(1)}×
+            {/* AO Radius */}
+            <div style={{ flex: 1, padding: "14px 18px", borderRight: "1px solid rgba(255,255,255,0.06)" }}>
+              <label style={{ display: "block", fontSize: "9px", letterSpacing: "0.18em", color: "rgba(198,40,40,0.65)", marginBottom: "8px" }}>
+                AO RADIUS — {aoRadius}px
               </label>
-              <input type="range" min={0.5} max={2} step={0.1} value={zoom}
-                onChange={(e) => setZoom(Number(e.target.value))}
-                className="w-full" style={{ accentColor: "#C62828" }} />
-              <div className="mt-1 flex justify-between" style={{ fontSize: "9px", color: "rgba(255,255,255,0.2)", fontFamily: "'IBM Plex Mono', monospace" }}>
-                <span>0.5×</span><span>1×</span><span>2×</span>
+              <input type="range" min={1} max={12} step={1} value={aoRadius}
+                style={{ width: "100%", accentColor: "#c62828" }}
+                onChange={e => { const v = Number(e.target.value); setAoRadius(v); recompute(normalStr, v); }} />
+              <div style={{ display: "flex", justifyContent: "space-between", marginTop: "4px", fontSize: "8px", color: "rgba(255,255,255,0.18)" }}>
+                <span>МАЛО</span><span>ГЛУБОКО</span>
               </div>
             </div>
 
             {/* Tiling */}
-            <div className="flex-1 p-4">
-              <label style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: "9px", letterSpacing: "0.2em", color: "rgba(198,40,40,0.7)", display: "block", marginBottom: "8px" }}>
-                TILING — {tileCount}×{tileCount}
+            <div style={{ flex: 1, padding: "14px 18px" }}>
+              <label style={{ display: "block", fontSize: "9px", letterSpacing: "0.18em", color: "rgba(198,40,40,0.65)", marginBottom: "8px" }}>
+                TILING — {tiling}×{tiling}
               </label>
-              <div className="flex gap-2">
-                {[1, 2, 3, 4].map((n) => (
-                  <button key={n} onClick={() => setTileCount(n)} className="flex-1 py-2 transition-all duration-150"
-                    style={{ background: tileCount === n ? "#C62828" : "rgba(255,255,255,0.05)", color: tileCount === n ? "#fff" : "rgba(255,255,255,0.4)", border: `1px solid ${tileCount === n ? "#C62828" : "rgba(255,255,255,0.08)"}`, borderRadius: "3px", fontFamily: "'IBM Plex Mono', monospace", fontSize: "11px", fontWeight: 600 }}>
-                    {n}×
-                  </button>
+              <div style={{ display: "flex", gap: "8px" }}>
+                {[1, 2, 3, 4].map(n => (
+                  <button key={n} onClick={() => setTiling(n)} style={{
+                    flex: 1, padding: "6px 0",
+                    background: tiling === n ? "#c62828" : "rgba(255,255,255,0.05)",
+                    color: tiling === n ? "#fff" : "rgba(255,255,255,0.35)",
+                    border: `1px solid ${tiling === n ? "#c62828" : "rgba(255,255,255,0.08)"}`,
+                    borderRadius: "3px", cursor: "pointer",
+                    fontFamily: "'IBM Plex Mono',monospace", fontSize: "11px", fontWeight: 600,
+                    transition: "all 0.12s",
+                  }}>{n}×</button>
                 ))}
               </div>
-              <p className="mt-1" style={{ fontSize: "9px", color: "rgba(255,255,255,0.2)", fontFamily: "'IBM Plex Mono', monospace" }}>SEAMLESS CHECK</p>
+              <div style={{ marginTop: "6px", fontSize: "8px", color: "rgba(255,255,255,0.18)" }}>
+                ПРОВЕРКА БЕСШОВНОСТИ
+              </div>
             </div>
           </div>
         </main>
 
-        {/* Правая панель — сравнение всех карт */}
-        <aside className="w-44 flex-shrink-0 border-l flex flex-col overflow-hidden"
-          style={{ borderColor: "rgba(255,255,255,0.06)", background: "#111113" }}>
-          <div className="px-4 py-3 border-b flex-shrink-0" style={{ borderColor: "rgba(255,255,255,0.06)" }}>
-            <p style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: "9px", letterSpacing: "0.2em", color: "rgba(255,255,255,0.3)" }}>ALL MAPS</p>
+        {/* ── ПРАВАЯ ПАНЕЛЬ: все карты рядом ── */}
+        <aside style={{
+          width: "160px", flexShrink: 0,
+          borderLeft: "1px solid rgba(255,255,255,0.07)",
+          background: "#0d0d0d",
+          display: "flex", flexDirection: "column",
+          overflow: "hidden",
+        }}>
+          <div style={{ padding: "10px 12px 6px", fontSize: "9px", letterSpacing: "0.22em", color: "rgba(255,255,255,0.28)", flexShrink: 0 }}>
+            ВСЕ КАРТЫ
           </div>
-          <div className="flex-1 overflow-auto p-3 space-y-3">
-            {(Object.keys(MAP_META) as MapKey[]).map((key) => {
-              const m = MAP_META[key];
-              const active = activeMap === key;
-              const url = maps[key];
+          <div style={{ flex: 1, overflowY: "auto", padding: "8px", display: "flex", flexDirection: "column", gap: "8px" }}>
+            {(Object.keys(MAP_INFO) as MapKey[]).map(key => {
+              const sel = active === key;
               return (
-                <div key={key} onClick={() => setActiveMap(key)} className="cursor-pointer transition-all duration-200"
-                  style={{ border: `1px solid ${active ? "#C62828" : "rgba(255,255,255,0.08)"}`, borderRadius: "4px", overflow: "hidden", boxShadow: active ? "0 0 12px rgba(198,40,40,0.3)" : "none" }}>
-                  <div style={{ aspectRatio: "1", background: "#0a0a0b", overflow: "hidden" }}>
-                    {url
-                      ? <img src={url} alt={m.label} style={{ display: "block", width: "100%", height: "100%", objectFit: "cover" }} />
+                <div key={key} onClick={() => setActive(key)} style={{
+                  border: `1px solid ${sel ? "#c62828" : "rgba(255,255,255,0.08)"}`,
+                  borderRadius: "4px", overflow: "hidden", cursor: "pointer",
+                  boxShadow: sel ? "0 0 10px rgba(198,40,40,0.25)" : "none",
+                  transition: "all 0.12s",
+                }}>
+                  <div style={{ aspectRatio: "1", background: "#0a0a0b" }}>
+                    {urls[key]
+                      ? <img src={urls[key]} style={{ display: "block", width: "100%", height: "100%", objectFit: "cover" }} />
                       : <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                          <div className="w-2 h-2 rounded-full animate-pulse" style={{ background: "rgba(198,40,40,0.4)" }} />
+                          <div style={{ width: "6px", height: "6px", borderRadius: "50%", background: "rgba(198,40,40,0.3)" }} />
                         </div>
                     }
                   </div>
-                  <div className="px-2 py-1" style={{ background: active ? "rgba(198,40,40,0.2)" : "rgba(0,0,0,0.4)" }}>
-                    <p style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: "8px", letterSpacing: "0.15em", color: active ? "#C62828" : "rgba(255,255,255,0.35)" }}>{m.tag}</p>
+                  <div style={{ padding: "3px 6px", background: sel ? "rgba(198,40,40,0.18)" : "rgba(0,0,0,0.4)" }}>
+                    <span style={{ fontSize: "8px", letterSpacing: "0.14em", color: sel ? "#c62828" : "rgba(255,255,255,0.3)" }}>
+                      {MAP_INFO[key].tag}
+                    </span>
                   </div>
                 </div>
               );
             })}
           </div>
-
-          {/* Скачать */}
-          <div className="p-3 border-t flex-shrink-0" style={{ borderColor: "rgba(255,255,255,0.06)" }}>
-            <button
-              onClick={() => {
-                const url = maps[activeMap];
-                if (!url) return;
-                const a = document.createElement("a");
-                a.href = url;
-                a.download = `pbr_${activeMap}.png`;
-                a.click();
-              }}
-              disabled={!maps[activeMap] || !!progress}
-              className="w-full py-2 text-center rounded transition-all duration-150"
-              style={{
-                background: maps[activeMap] && !progress ? "#C62828" : "rgba(255,255,255,0.05)",
-                color: maps[activeMap] && !progress ? "#fff" : "rgba(255,255,255,0.2)",
-                border: `1px solid ${maps[activeMap] && !progress ? "#C62828" : "rgba(255,255,255,0.08)"}`,
-                fontFamily: "'IBM Plex Mono', monospace",
-                fontSize: "9px",
-                letterSpacing: "0.12em",
-                cursor: maps[activeMap] && !progress ? "pointer" : "default",
-              }}
-            >
-              ↓ СКАЧАТЬ {MAP_META[activeMap].tag}
-            </button>
-            <p className="mt-2 text-center" style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: "8px", color: "rgba(255,255,255,0.2)", letterSpacing: "0.06em", lineHeight: 1.6 }}>
-              PNG · 512×512
-              <br />RHINO / VRAY
-            </p>
-          </div>
         </aside>
+
       </div>
     </div>
   );
