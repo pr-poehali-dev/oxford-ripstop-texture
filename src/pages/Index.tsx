@@ -1,99 +1,10 @@
 import { useState, useEffect, useRef } from "react";
 
-// ─── Процедурная генерация Oxford Ripstop ─────────────────────────────────
-// Oxford Ripstop: plain weave с усиленными рёбрами через каждые N нитей.
-// Паттерн: ячейка 8px — 2 нити plain weave, затем 1 утолщённая нить (ripstop rib).
-// Цвет: тёмно-оливковый нейтральный, типичный для тактического/технического текстиля.
+const SOURCE_URL =
+  "https://cdn.poehali.dev/projects/5a15539d-2e23-46d4-9ae4-0b3d25a0b619/bucket/69833b61-01b5-42e0-a8d3-5b99d99bbf7c.png";
 
-function generateOxfordRipstop(size = 512): ImageData {
-  const c = document.createElement("canvas");
-  c.width = size; c.height = size;
-  const ctx = c.getContext("2d")!;
-  const imgData = ctx.createImageData(size, size);
-  const px = imgData.data;
-
-  // Цветные полосы: оливково-жёлтый, тёмно-серый, оранжевый, синий, малиновый, жёлто-зелёный, янтарный, тёмно-зелёный
-  const STRIPES: [number, number, number][] = [
-    [180, 190, 50],   // оливково-жёлтый
-    [48,  50,  44],   // тёмно-серый/чёрный
-    [220, 105, 20],   // оранжевый
-    [45,  100, 200],  // синий
-    [210, 40,  130],  // малиновый/розовый
-    [160, 190, 30],   // жёлто-зелёный лайм
-    [215, 145, 20],   // янтарный
-    [40,  100, 50],   // тёмно-зелёный
-  ];
-
-  // Ширина одной полосы
-  const stripeW = size / STRIPES.length;
-
-  // Параметры сотовой ячейки (honeycomb)
-  const HEX_W = 12;   // ширина шестиугольника
-  const HEX_H = 10;   // высота шестиугольника
-  const THREAD = 2;   // толщина нити
-
-  // Шум для микро-фактуры
-  const noise = (x: number, y: number) => {
-    const v = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
-    return (v - Math.floor(v)) * 2 - 1;
-  };
-
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-
-      // Определяем полосу по X (с зигзагом на границах)
-      // Зигзаг: граница смещается по Y синусоидально
-      const zigzagAmp = 8; // амплитуда зигзага в px
-      const zigzagFreq = Math.PI * 2 / (HEX_H * 2);
-      const zigOffset = Math.sin(y * zigzagFreq) * zigzagAmp;
-
-      const xShifted = x - zigOffset;
-      const rawStripe = Math.floor(xShifted / stripeW);
-      const stripeIdx = Math.max(0, Math.min(STRIPES.length - 1, rawStripe));
-      const [SR, SG, SB] = STRIPES[stripeIdx];
-
-      // Сотовое плетение (honeycomb hexagonal mesh)
-      // Чётные/нечётные ряды смещены на HEX_W/2
-      const row = Math.floor(y / HEX_H);
-      const offsetX = (row % 2 === 0) ? 0 : HEX_W / 2;
-      const col = Math.floor((x + offsetX) / HEX_W);
-      const localX = ((x + offsetX) % HEX_W + HEX_W) % HEX_W;
-      const localY = y % HEX_H;
-
-      // Граница шестиугольника — нить
-      const isTopBot  = localY < THREAD || localY >= HEX_H - THREAD;
-      const isLeftRig = localX < THREAD || localX >= HEX_W - THREAD;
-      // Диагональные рёбра (форма соты)
-      const diagSlope = HEX_H / (HEX_W * 0.3);
-      const diagLeft  = Math.abs(localY - localX * diagSlope) < THREAD * 1.2;
-      const diagRight = Math.abs(localY - (HEX_W - localX) * diagSlope) < THREAD * 1.2;
-      const isThread = isTopBot || isLeftRig || diagLeft || diagRight;
-
-      // Кривизна ячейки — яркость в центре выше
-      const cx = localX / HEX_W - 0.5;
-      const cy = localY / HEX_H - 0.5;
-      const curve = 1 - Math.sqrt(cx * cx + cy * cy) * 1.6;
-      const curveClamped = Math.max(0, Math.min(1, curve));
-
-      // Микро-шум волокна
-      const n = noise(x + col * 7.3, y + row * 3.1) * 0.045;
-
-      // Нить: тёмная, центр ячейки: светлее
-      const threadDark = isThread ? -0.30 : 0;
-      const highlight = !isThread ? curveClamped * 0.22 : 0;
-      let brightness = 1.0 + threadDark + highlight + n;
-      brightness = Math.max(0.45, Math.min(1.40, brightness));
-
-      const i = (y * size + x) * 4;
-      px[i]   = Math.round(Math.min(255, SR * brightness));
-      px[i+1] = Math.round(Math.min(255, SG * brightness));
-      px[i+2] = Math.round(Math.min(255, SB * brightness));
-      px[i+3] = 255;
-    }
-  }
-
-  return imgData;
-}
+const PROXY_URL =
+  "https://functions.poehali.dev/358ebaa8-0b09-4cd9-bba4-f5ef4f0fcff6";
 
 // ─── PBR алгоритмы ────────────────────────────────────────────────────────
 
@@ -326,49 +237,6 @@ function makeGloss(src: ImageData): ImageData {
   return out;
 }
 
-// Seamless: сдвиг на 50% + blend краёв через cos-маску
-function makeSeamless(src: ImageData): ImageData {
-  const { width: w, height: h, data } = src;
-  const out = new Uint8ClampedArray(w * h * 4);
-
-  const get = (x: number, y: number, ch: number) => {
-    const xi = ((x % w) + w) % w;
-    const yi = ((y % h) + h) % h;
-    return data[(yi * w + xi) * 4 + ch];
-  };
-
-  // Ширина зоны смешивания — 30% от размера
-  const blendW = Math.round(w * 0.30);
-  const blendH = Math.round(h * 0.30);
-
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      // Оригинал и сдвинутая версия
-      const sx = (x + w / 2) | 0;
-      const sy = (y + h / 2) | 0;
-
-      // Вес смешивания по X: края → shifted, центр → original
-      let wx = 1.0;
-      if (x < blendW) wx = 0.5 - 0.5 * Math.cos(Math.PI * x / blendW);
-      else if (x > w - blendW) wx = 0.5 + 0.5 * Math.cos(Math.PI * (x - (w - blendW)) / blendW);
-
-      let wy = 1.0;
-      if (y < blendH) wy = 0.5 - 0.5 * Math.cos(Math.PI * y / blendH);
-      else if (y > h - blendH) wy = 0.5 + 0.5 * Math.cos(Math.PI * (y - (h - blendH)) / blendH);
-
-      const t = Math.min(wx, wy);
-      const idx = (y * w + x) * 4;
-      for (let c = 0; c < 3; c++) {
-        const orig = get(x, y, c);
-        const shifted = get(sx, sy, c);
-        out[idx + c] = Math.round(orig * t + shifted * (1 - t));
-      }
-      out[idx + 3] = 255;
-    }
-  }
-  return new ImageData(out, w, h);
-}
-
 function toDataURL(id: ImageData): string {
   const c = document.createElement("canvas");
   c.width = id.width; c.height = id.height;
@@ -403,7 +271,7 @@ export default function Index() {
     setStatus("processing");
     setTimeout(() => {
       setUrls({
-        baseColor: toDataURL(img),
+        baseColor: toDataURL(makeBaseColor(img)),
         normal:    toDataURL(makeNormal(img, ns)),
         roughness: toDataURL(makeRoughness(img)),
         ao:        toDataURL(makeAO(img, aor)),
@@ -415,10 +283,22 @@ export default function Index() {
 
   useEffect(() => {
     setStatus("loading");
-    setTimeout(() => {
-      srcRef.current = generateOxfordRipstop(512);
-      buildMaps(srcRef.current, normalStr, aoRadius);
-    }, 20);
+    fetch(`${PROXY_URL}?url=${encodeURIComponent(SOURCE_URL)}`)
+      .then(r => r.json())
+      .then(({ data }: { data: string }) => {
+        const img = new Image();
+        img.onload = () => {
+          const c = document.createElement("canvas");
+          c.width = img.naturalWidth; c.height = img.naturalHeight;
+          const ctx = c.getContext("2d")!;
+          ctx.drawImage(img, 0, 0);
+          const raw = ctx.getImageData(0, 0, img.naturalWidth, img.naturalHeight);
+          srcRef.current = autoCropToSquare(raw);
+          buildMaps(srcRef.current, normalStr, aoRadius);
+        };
+        img.src = `data:image/png;base64,${data}`;
+      })
+      .catch(() => setStatus("error"));
   }, []);
 
   const recompute = (ns: number, aor: number) => {
