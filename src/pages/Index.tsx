@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 
-const TEXTURE_URL = "https://cdn.poehali.dev/projects/5a15539d-2e23-46d4-9ae4-0b3d25a0b619/files/9843c674-0a18-4a1e-9cad-83ae49de774b.jpg";
+const TEXTURE_URL = "https://cdn.poehali.dev/projects/5a15539d-2e23-46d4-9ae4-0b3d25a0b619/files/00ef52a8-d0e5-4c00-bf62-22a9c504d3b9.jpg";
 
 function loadTextureImage(size = 512): Promise<ImageData> {
   return new Promise((resolve, reject) => {
