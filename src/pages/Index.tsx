@@ -1,102 +1,137 @@
 import { useState, useEffect, useRef } from "react";
 
-// ─── Процедурная бесшовная сотовая текстура ───────────────────────────────
+// ─── Процедурная бесшовная текстура "вафельная вязка с шестиугольными ячейками" ──
 //
-// Математика бесшовности:
-//   Шестиугольная сетка задаётся двумя базисными векторами:
-//     a1 = (W, 0)          — горизонтальный период
-//     a2 = (W/2, H*3/2)    — диагональный период
-//   где W = 2*R*sin(60°), H = R  (R — радиус вписанной окружности).
-//   Размер холста SIZE выбирается кратным периоду по обеим осям,
-//   поэтому при тайлинге ни одна линия не разрывается.
+// Геометрия по оригиналу:
+//   • Крупные ячейки — вытянутые по горизонтали шестиугольники (flat-top)
+//     с синусоидальными боковыми краями (имитация вязки)
+//   • Ячейки расположены в шахматном порядке (чётные ряды сдвинуты на CW/2)
+//   • Горизонтальные перемычки между рядами — узкие полосы с точечным узором
+//   • Внутри ячейки — мелкая сетка точек (рельефная вязка)
 //
-// Нет теней, нет градиентов — только плоский цвет нити и фона.
-// ──────────────────────────────────────────────────────────────────────────
+// Бесшовность гарантируется выбором размера холста кратным периоду:
+//   TX = CW (ширина ячейки), TY = CH (полный вертикальный период двух рядов)
+// ──────────────────────────────────────────────────────────────────────────────
 
 function generateHoneycomb(size = 512): ImageData {
-  // Радиус ячейки (от центра до вершины)
-  const R = 28;
-  // Толщина нити (стенки ячейки)
-  const THREAD = 3.2;
+  // ── Параметры ячейки ──────────────────────────────────────────────────
+  const CW   = 64;    // ширина ячейки (горизонтальный период)
+  const CH   = 36;    // высота одного ряда ячеек
+  const BAND = 8;     // высота горизонтальной перемычки между рядами
+  const ROW_H = CH + BAND; // полный вертикальный шаг (44px)
 
-  // Цвет нити и фона (красный текстиль)
-  const FILL_R = 180, FILL_G = 30,  FILL_B = 30;   // фон ячейки
-  const WIRE_R = 110, WIRE_G = 15,  WIRE_B = 15;   // нить
+  // Амплитуда синусоиды на боковых краях ячейки
+  const WAVE_A = 5;
+  // Частота синусоиды (2 периода на ширину ячейки)
+  const WAVE_F = (2 * Math.PI) / CW;
 
-  // Базисные векторы гексагональной решётки (pointy-top ориентация)
-  //   ax = w    (ширина ячейки)
-  //   ay = h*3/2 (вертикальный шаг между рядами)
-  const w = Math.sqrt(3) * R;   // ~48.5
-  const h = 2 * R;              // 56
+  // ── Цвета (оттенки красного, как в оригинале) ────────────────────────
+  // Фон ячейки — основной красный
+  const C_CELL   = [195, 30, 20] as const;
+  // Нить/граница ячейки — тёмно-красный
+  const C_BORDER = [120, 12, 10] as const;
+  // Перемычка — чуть темнее ячейки
+  const C_BAND   = [155, 22, 15] as const;
+  // Точки внутри ячейки (мелкая сетка рельефа) — тёмные
+  const C_DOT    = [145, 20, 14] as const;
+  // Точки в перемычке — мелкие светлые/тёмные
+  const C_BDOT   = [105, 10, 8] as const;
 
-  // Функция: расстояние от точки (px, py) до ближайшего ребра шестиугольника
-  // Возвращает: положительное = внутри, отрицательное = снаружи (вне ячейки)
-  // Используем аналитическую формулу для правильного шестиугольника
-  function hexDist(px: number, py: number): number {
-    // Переводим в координаты ячейки (pointy-top)
-    // Сначала находим ближайший центр шестиугольника
-    const q = (Math.sqrt(3) / 3 * px - 1 / 3 * py) / R;
-    const r_ = (2 / 3 * py) / R;
-    const s = -q - r_;
-
-    // Округляем до ближайшего hex-координаты
-    let rq = Math.round(q), rr = Math.round(r_); const rs = Math.round(s);
-    const dq = Math.abs(rq - q), dr = Math.abs(rr - r_), ds = Math.abs(rs - s);
-    if (dq > dr && dq > ds) rq = -rr - rs;
-    else if (dr > ds) rr = -rq - rs;
-
-    // Центр ячейки в пикселях
-    const cx = R * (Math.sqrt(3) * rq + Math.sqrt(3) / 2 * rr);
-    const cy = R * (3 / 2 * rr);
-
-    // Расстояние от (px,py) до центра ячейки
-    const lx = px - cx, ly = py - cy;
-
-    // Расстояние до ближайшей грани правильного шестиугольника
-    // (pointy-top: 6 граней с нормалями под углами 0°,60°,120°,180°,240°,300°)
-    let minEdgeDist = Infinity;
-    for (let k = 0; k < 6; k++) {
-      const angle = (k * 60 + 30) * Math.PI / 180;
-      const nx = Math.cos(angle), ny = Math.sin(angle);
-      // Расстояние до грани = R*cos(30°) - проекция на нормаль
-      const edgeDist = R * Math.cos(Math.PI / 6) - (lx * nx + ly * ny);
-      if (edgeDist < minEdgeDist) minEdgeDist = edgeDist;
-    }
-    return minEdgeDist; // >0 внутри, <0 снаружи
-  }
+  // Толщина нити (граница ячейки)
+  const BORDER = 2.5;
+  // Шаг мелкой сетки внутри ячейки
+  const GRID   = 7;
+  // Радиус точки в сетке
+  const DOT_R  = 1.2;
+  // Шаг точек в перемычке
+  const BDOT_STEP = 5;
 
   const c = document.createElement("canvas");
   c.width = size; c.height = size;
   const ctx = c.getContext("2d")!;
-  const imgData = ctx.createImageData(size, size);
-  const px = imgData.data;
+  const img = ctx.createImageData(size, size);
+  const d = img.data;
+
+  // Функция: вычисляет цвет пикселя (x, y) → [r, g, b]
+  function getColor(px: number, py: number): [number, number, number] {
+    // Нормализуем в прямоугольный период (2 ряда × ROW_H по вертикали, CW по горизонтали)
+    // Вертикальный период = 2 * ROW_H (чётные и нечётные ряды)
+    const PERIOD_Y = 2 * ROW_H;
+    const gy = ((py % PERIOD_Y) + PERIOD_Y) % PERIOD_Y;
+    const gx = ((px % CW) + CW) % CW;
+
+    // Определяем, в каком ряду мы находимся (0 или 1)
+    const rowIdx = gy < ROW_H ? 0 : 1;
+    const localY = gy < ROW_H ? gy : gy - ROW_H;
+
+    // Сдвиг по X для нечётного ряда
+    const xShift = rowIdx === 1 ? CW / 2 : 0;
+    const lx = ((px - xShift) % CW + CW) % CW;
+    const ly = localY;
+
+    // ── Зона горизонтальной перемычки ────────────────────────────────
+    if (ly >= CH && ly < CH + BAND) {
+      const by = ly - CH; // 0..BAND-1
+      // Точки в перемычке — регулярная сетка
+      const dotX = lx % BDOT_STEP;
+      const dotY = by % BDOT_STEP;
+      const dx = dotX - BDOT_STEP / 2;
+      const dy = dotY - BDOT_STEP / 2;
+      if (dx * dx + dy * dy < DOT_R * DOT_R * 1.8) return [...C_BDOT] as [number, number, number];
+      // Горизонтальные тонкие линии в перемычке
+      if (by === 0 || by === BAND - 1) return [...C_BORDER] as [number, number, number];
+      return [...C_BAND] as [number, number, number];
+    }
+
+    // ── Зона ячейки (ly < CH) ─────────────────────────────────────────
+    // Синусоидальная граница по X:
+    // Левый край ячейки: x ≈ 0 + WAVE_A * sin(...)
+    // Правый край ячейки: x ≈ CW + WAVE_A * sin(...)  (совпадает с левым следующей)
+    // Нормаль к левой/правой границе — вертикальная синусоида
+    const phase = ly * WAVE_F;
+    const waveOffset = WAVE_A * Math.sin(phase);
+
+    // Расстояние до левого края (с синусоидой)
+    const distLeft  = lx - waveOffset;
+    // Расстояние до правого края (следующая ячейка зеркальна)
+    const distRight = CW - lx + waveOffset;
+
+    // Граница сверху и снизу ячейки — прямые горизонтальные
+    const distTop    = ly;
+    const distBottom = CH - ly;
+
+    // Минимальное расстояние до любой границы
+    const minDist = Math.min(Math.abs(distLeft), Math.abs(distRight), distTop, distBottom);
+
+    // Нить (граница)
+    if (minDist < BORDER || Math.abs(distLeft) < BORDER || Math.abs(distRight) < BORDER) {
+      return [...C_BORDER] as [number, number, number];
+    }
+
+    // Мелкая сетка точек внутри ячейки (рельефная вязка)
+    const gx2 = lx % GRID;
+    const gy2 = ly % GRID;
+    const ddx = gx2 - GRID / 2;
+    const ddy = gy2 - GRID / 2;
+    if (ddx * ddx + ddy * ddy < DOT_R * DOT_R) {
+      return [...C_DOT] as [number, number, number];
+    }
+
+    return [...C_CELL] as [number, number, number];
+  }
 
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
-      // Бесшовность: тайлинг через модуль периода решётки
-      // Период решётки: TX = w, TY = h*1.5 — но это не прямоугольный период.
-      // Правильный прямоугольный период: TX = w, TY = h*3/2*2 = 3*h
-      // Однако hex-сетка сама по себе бесшовна при любом размере холста —
-      // нет нужды в ручном тайлинге, достаточно просто вычислять hexDist(x,y).
-      const dist = hexDist(x, y);
+      const [r, g, b] = getColor(x, y);
       const i = (y * size + x) * 4;
-
-      if (dist < THREAD) {
-        // Нить — точный порог, без антиалиасинга (никаких градиентов)
-        px[i]   = WIRE_R;
-        px[i+1] = WIRE_G;
-        px[i+2] = WIRE_B;
-      } else {
-        // Фон ячейки — плоский цвет
-        px[i]   = FILL_R;
-        px[i+1] = FILL_G;
-        px[i+2] = FILL_B;
-      }
-      px[i+3] = 255;
+      d[i]   = r;
+      d[i+1] = g;
+      d[i+2] = b;
+      d[i+3] = 255;
     }
   }
 
-  return imgData;
+  return img;
 }
 
 // ─── PBR алгоритмы ────────────────────────────────────────────────────────
