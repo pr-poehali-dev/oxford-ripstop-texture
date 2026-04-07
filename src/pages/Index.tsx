@@ -9,93 +9,85 @@ function generateOxfordRipstop(size = 512): ImageData {
   const c = document.createElement("canvas");
   c.width = size; c.height = size;
   const ctx = c.getContext("2d")!;
-
-  // Базовые цвета нити (тёмный оливково-серый)
-  const BASE_R = 72, BASE_G = 74, BASE_B = 68;
-
-  // Параметры переплетения
-  const THIN  = 3;   // px — тонкая нить
-  const THICK = 5;   // px — усиленная нить (ripstop rib)
-  const REPEAT = 4;  // нитей до следующего rib
-
-  // Строим таблицу: для каждой координаты → индекс нити и её тип (thin/thick)
-  function buildThreadMap(totalSize: number) {
-    const map: { idx: number; thick: boolean; pos: number; size: number }[] = [];
-    let pos = 0;
-    let idx = 0;
-    while (pos < totalSize) {
-      const isThick = (idx % REPEAT === 0);
-      const sz = isThick ? THICK : THIN;
-      map.push({ idx, thick: isThick, pos, size: sz });
-      pos += sz;
-      idx++;
-    }
-    return map;
-  }
-
-  const rowThreads = buildThreadMap(size);
-  const colThreads = buildThreadMap(size);
-
-  // Pixel buffer
   const imgData = ctx.createImageData(size, size);
   const px = imgData.data;
 
-  // Шум для микро-фактуры волокна
-  const noise = (x: number, y: number, scale: number) => {
-    const xi = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
-    const yi = Math.sin(x * 269.5 + y * 183.3 + scale) * 43758.5453;
-    return (xi - Math.floor(xi) + yi - Math.floor(yi)) * 0.5;
+  // Цветные полосы: оливково-жёлтый, тёмно-серый, оранжевый, синий, малиновый, жёлто-зелёный, янтарный, тёмно-зелёный
+  const STRIPES: [number, number, number][] = [
+    [180, 190, 50],   // оливково-жёлтый
+    [48,  50,  44],   // тёмно-серый/чёрный
+    [220, 105, 20],   // оранжевый
+    [45,  100, 200],  // синий
+    [210, 40,  130],  // малиновый/розовый
+    [160, 190, 30],   // жёлто-зелёный лайм
+    [215, 145, 20],   // янтарный
+    [40,  100, 50],   // тёмно-зелёный
+  ];
+
+  // Ширина одной полосы
+  const stripeW = size / STRIPES.length;
+
+  // Параметры сотовой ячейки (honeycomb)
+  const HEX_W = 12;   // ширина шестиугольника
+  const HEX_H = 10;   // высота шестиугольника
+  const THREAD = 2;   // толщина нити
+
+  // Шум для микро-фактуры
+  const noise = (x: number, y: number) => {
+    const v = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
+    return (v - Math.floor(v)) * 2 - 1;
   };
 
   for (let y = 0; y < size; y++) {
-    // Найти нить по Y
-    const rowT = rowThreads.find(t => y >= t.pos && y < t.pos + t.size)!;
-    const rowLocal = y - rowT.pos; // позиция внутри нити
-
     for (let x = 0; x < size; x++) {
-      const colT = colThreads.find(t => x >= t.pos && x < t.pos + t.size)!;
-      const colLocal = x - colT.pos;
 
-      // Plain weave: нить сверху определяется чётностью
-      // Ripstop: thick нити всегда на верхнем уровне
-      const rowOnTop = rowT.thick
-        ? true
-        : colT.thick
-          ? false
-          : (rowT.idx + colT.idx) % 2 === 0;
+      // Определяем полосу по X (с зигзагом на границах)
+      // Зигзаг: граница смещается по Y синусоидально
+      const zigzagAmp = 8; // амплитуда зигзага в px
+      const zigzagFreq = Math.PI * 2 / (HEX_H * 2);
+      const zigOffset = Math.sin(y * zigzagFreq) * zigzagAmp;
 
-      // Кривизна нити: нить выпуклая посередине
-      const rowCenter = rowT.size / 2;
-      const colCenter = colT.size / 2;
-      const rowCurve = 1 - Math.abs(rowLocal - rowCenter + 0.5) / rowCenter;
-      const colCurve = 1 - Math.abs(colLocal - colCenter + 0.5) / colCenter;
+      const xShifted = x - zigOffset;
+      const rawStripe = Math.floor(xShifted / stripeW);
+      const stripeIdx = Math.max(0, Math.min(STRIPES.length - 1, rawStripe));
+      const [SR, SG, SB] = STRIPES[stripeIdx];
 
-      // Нить сверху — ярче, нить снизу — темнее
-      const topCurve  = rowOnTop ? rowCurve : colCurve;
-      const botCurve  = rowOnTop ? colCurve : rowCurve;
+      // Сотовое плетение (honeycomb hexagonal mesh)
+      // Чётные/нечётные ряды смещены на HEX_W/2
+      const row = Math.floor(y / HEX_H);
+      const offsetX = (row % 2 === 0) ? 0 : HEX_W / 2;
+      const col = Math.floor((x + offsetX) / HEX_W);
+      const localX = ((x + offsetX) % HEX_W + HEX_W) % HEX_W;
+      const localY = y % HEX_H;
 
-      // Тень от переплетения
-      const shadow = (1 - botCurve) * 0.28;
+      // Граница шестиугольника — нить
+      const isTopBot  = localY < THREAD || localY >= HEX_H - THREAD;
+      const isLeftRig = localX < THREAD || localX >= HEX_W - THREAD;
+      // Диагональные рёбра (форма соты)
+      const diagSlope = HEX_H / (HEX_W * 0.3);
+      const diagLeft  = Math.abs(localY - localX * diagSlope) < THREAD * 1.2;
+      const diagRight = Math.abs(localY - (HEX_W - localX) * diagSlope) < THREAD * 1.2;
+      const isThread = isTopBot || isLeftRig || diagLeft || diagRight;
+
+      // Кривизна ячейки — яркость в центре выше
+      const cx = localX / HEX_W - 0.5;
+      const cy = localY / HEX_H - 0.5;
+      const curve = 1 - Math.sqrt(cx * cx + cy * cy) * 1.6;
+      const curveClamped = Math.max(0, Math.min(1, curve));
 
       // Микро-шум волокна
-      const n = noise(x, y, rowT.idx + colT.idx * 0.37) * 0.07 - 0.035;
+      const n = noise(x + col * 7.3, y + row * 3.1) * 0.045;
 
-      // Блик на верхней нити
-      const highlight = topCurve * topCurve * (rowT.thick || colT.thick ? 0.18 : 0.10);
-
-      // Итоговая яркость
-      let brightness = 1.0 - shadow + highlight + n;
-
-      // Rib нити чуть темнее по тону (разное сырьё)
-      const ribDark = (rowT.thick || colT.thick) ? -0.06 : 0;
-      brightness += ribDark;
-
-      brightness = Math.max(0.5, Math.min(1.35, brightness));
+      // Нить: тёмная, центр ячейки: светлее
+      const threadDark = isThread ? -0.30 : 0;
+      const highlight = !isThread ? curveClamped * 0.22 : 0;
+      let brightness = 1.0 + threadDark + highlight + n;
+      brightness = Math.max(0.45, Math.min(1.40, brightness));
 
       const i = (y * size + x) * 4;
-      px[i]   = Math.round(Math.min(255, BASE_R * brightness));
-      px[i+1] = Math.round(Math.min(255, BASE_G * brightness));
-      px[i+2] = Math.round(Math.min(255, BASE_B * brightness));
+      px[i]   = Math.round(Math.min(255, SR * brightness));
+      px[i+1] = Math.round(Math.min(255, SG * brightness));
+      px[i+2] = Math.round(Math.min(255, SB * brightness));
       px[i+3] = 255;
     }
   }
