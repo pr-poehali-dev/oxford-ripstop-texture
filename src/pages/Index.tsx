@@ -1,84 +1,22 @@
 import { useState, useEffect, useRef } from "react";
 
-function generateHoneycomb(size = 512): ImageData {
-  const S3 = Math.sqrt(3);
-  const R = 18;
-  const W = S3 * R;
-  const H = 2 * R;
-  const THREAD = 1.8;
+const TEXTURE_CDN = "https://cdn.poehali.dev/projects/5a15539d-2e23-46d4-9ae4-0b3d25a0b619/files/bbcedd3d-03a1-46e1-8f81-fed1392a8f52.jpg";
+const PROXY_URL = "https://functions.poehali.dev/358ebaa8-0b09-4cd9-bba4-f5ef4f0fcff6";
 
-  const C_EDGE: [number,number,number] = [215, 195, 165];
-  const C_RIP:  [number,number,number] = [195, 175, 145];
-  const C_BODY: [number,number,number] = [168, 143, 113];
-  const C_DEEP: [number,number,number] = [145, 122, 95];
-
-  const canv = document.createElement("canvas");
-  canv.width = size; canv.height = size;
-  const ctx = canv.getContext("2d")!;
-  const img = ctx.createImageData(size, size);
-  const pix = img.data;
-
-  function hash(x:number,y:number){
-    let h=(x*374761393+y*668265263+13)&0x7fffffff;
-    h=((h>>13)^h)*1274126177;h=((h>>16)^h);
-    return(h&255)/255;
-  }
-
-  function hexDist(px:number,py:number):number{
-    const ax=Math.abs(px), ay=Math.abs(py);
-    const d1=R-ay;
-    const d2=R-(0.5*ay+S3*0.5*ax);
-    return Math.min(d1,d2);
-  }
-
-  function nearestHex(px:number,py:number):[number,number]{
-    const row=Math.round(py/(H*0.75));
-    const off=(row&1)?W*0.5:0;
-    const col=Math.round((px-off)/W);
-    let bx=0,by=0,bd=Infinity;
-    for(let dr=-1;dr<=1;dr++){
-      for(let dc=-1;dc<=1;dc++){
-        const r2=row+dr,c2=col+dc;
-        const o2=(r2&1)?W*0.5:0;
-        const cx=c2*W+o2;
-        const cy=r2*H*0.75;
-        const dx=px-cx,dy=py-cy;
-        const d=dx*dx+dy*dy;
-        if(d<bd){bd=d;bx=cx;by=cy;}
-      }
-    }
-    return[bx,by];
-  }
-
-  for(let y=0;y<size;y++){
-    for(let x=0;x<size;x++){
-      const[cx,cy]=nearestHex(x,y);
-      const lx=x-cx, ly=y-cy;
-      const dist=hexDist(lx,ly);
-
-      const i=(y*size+x)*4;
-      const noise=hash(x,y)*0.12-0.06;
-
-      if(dist<=THREAD){
-        const ripPhase=((x*0.7+y*1.1)%5);
-        const c=ripPhase<1.8?C_RIP:C_EDGE;
-        pix[i]  =Math.min(255,Math.max(0,c[0]+c[0]*noise|0));
-        pix[i+1]=Math.min(255,Math.max(0,c[1]+c[1]*noise|0));
-        pix[i+2]=Math.min(255,Math.max(0,c[2]+c[2]*noise|0));
-      } else {
-        const t=Math.min(1,(dist-THREAD)/14);
-        const r=C_BODY[0]*t+C_DEEP[0]*(1-t);
-        const g=C_BODY[1]*t+C_DEEP[1]*(1-t);
-        const b=C_BODY[2]*t+C_DEEP[2]*(1-t);
-        const weft=((x%3===0)||(y%3===0))?-8:0;
-        pix[i]  =Math.min(255,Math.max(0,(r+r*noise+weft)|0));
-        pix[i+1]=Math.min(255,Math.max(0,(g+g*noise+weft)|0));
-        pix[i+2]=Math.min(255,Math.max(0,(b+b*noise+weft)|0));
-      }
-      pix[i+3]=255;
-    }
-  }
-  return img;
+async function loadTextureViaProxy(size = 512): Promise<ImageData> {
+  const resp = await fetch(`${PROXY_URL}?url=${encodeURIComponent(TEXTURE_CDN)}`);
+  if (!resp.ok) throw new Error("Proxy error");
+  const json = await resp.json();
+  const bin = atob(json.data);
+  const arr = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  const blob = new Blob([arr], { type: "image/png" });
+  const bmp = await createImageBitmap(blob, { resizeWidth: size, resizeHeight: size });
+  const c = document.createElement("canvas");
+  c.width = size; c.height = size;
+  const ctx = c.getContext("2d")!;
+  ctx.drawImage(bmp, 0, 0);
+  return ctx.getImageData(0, 0, size, size);
 }
 
 // ─── PBR алгоритмы ────────────────────────────────────────────────────────
@@ -295,10 +233,10 @@ export default function Index() {
 
   useEffect(() => {
     setStatus("loading");
-    setTimeout(() => {
-      srcRef.current = generateHoneycomb(512);
-      buildMaps(srcRef.current, normalStr, aoRadius);
-    }, 20);
+    loadTextureViaProxy(512).then(img => {
+      srcRef.current = img;
+      buildMaps(img, normalStr, aoRadius);
+    }).catch(() => setStatus("error"));
   }, []);
 
   const recompute = (ns: number, aor: number) => {
