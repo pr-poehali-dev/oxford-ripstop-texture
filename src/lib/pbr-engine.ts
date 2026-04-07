@@ -1,5 +1,4 @@
-const TEXTURE_CDN = "https://cdn.poehali.dev/projects/5a15539d-2e23-46d4-9ae4-0b3d25a0b619/bucket/747e9d96-a5e6-40a7-8ef3-b30e50b67d60.png";
-const FLATTEN_URL = "https://functions.poehali.dev/76de743a-27ec-4cc9-ac1e-8908beb4387b";
+const GENERATE_URL = "https://functions.poehali.dev/76de743a-27ec-4cc9-ac1e-8908beb4387b";
 
 export type MapKey = "baseColor" | "normal" | "roughness" | "ao" | "gloss";
 
@@ -12,7 +11,7 @@ export const MAPS: Record<MapKey, { tag: string; label: string; hint: string }> 
 };
 
 export async function loadFlattenedTexture(size = 512): Promise<ImageData> {
-  const resp = await fetch(`${FLATTEN_URL}?url=${encodeURIComponent(TEXTURE_CDN)}&size=${size}`);
+  const resp = await fetch(`${GENERATE_URL}?size=${size}`);
   if (!resp.ok) throw new Error("Flatten error");
   const json = await resp.json();
   const bin = atob(json.data);
