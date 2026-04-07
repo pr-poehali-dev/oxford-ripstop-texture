@@ -1,17 +1,88 @@
 import { useState, useEffect, useRef } from "react";
 
-const TEXTURE_URL = "https://cdn.poehali.dev/projects/5a15539d-2e23-46d4-9ae4-0b3d25a0b619/files/00ef52a8-d0e5-4c00-bf62-22a9c504d3b9.jpg";
+function generateHoneycomb(size = 512): ImageData {
+  const FLAT = 36;
+  const SLANT_W = 14;
+  const HALF_H = 16;
+  const CW = FLAT + 2 * SLANT_W;
+  const CH = 2 * HALF_H;
+  const TILE_H = 2 * CH;
+  const THREAD = 2.0;
 
-async function loadTextureImage(size = 512): Promise<ImageData> {
-  const resp = await fetch(TEXTURE_URL);
-  if (!resp.ok) throw new Error("Failed to load texture");
-  const blob = await resp.blob();
-  const bmp = await createImageBitmap(blob, { resizeWidth: size, resizeHeight: size });
-  const c = document.createElement("canvas");
-  c.width = size; c.height = size;
-  const ctx = c.getContext("2d")!;
-  ctx.drawImage(bmp, 0, 0);
-  return ctx.getImageData(0, 0, size, size);
+  const C_EDGE: [number,number,number] = [215, 195, 165];
+  const C_BODY: [number,number,number] = [165, 140, 110];
+  const C_BODY2:[number,number,number] = [155, 130, 100];
+  const C_DOT:  [number,number,number] = [140, 118, 90];
+  const C_RIP:  [number,number,number] = [190, 168, 135];
+
+  const canv = document.createElement("canvas");
+  canv.width = size; canv.height = size;
+  const ctx = canv.getContext("2d")!;
+  const img = ctx.createImageData(size, size);
+  const pix = img.data;
+
+  const VX = [SLANT_W, SLANT_W + FLAT, CW, SLANT_W + FLAT, SLANT_W, 0];
+  const VY = [0, 0, HALF_H, CH, CH, HALF_H];
+
+  function distSeg(px:number,py:number,ax:number,ay:number,bx:number,by:number){
+    const dx=bx-ax,dy=by-ay,l2=dx*dx+dy*dy;
+    if(l2===0)return Math.hypot(px-ax,py-ay);
+    let t=((px-ax)*dx+(py-ay)*dy)/l2;
+    if(t<0)t=0;else if(t>1)t=1;
+    return Math.hypot(px-(ax+t*dx),py-(ay+t*dy));
+  }
+
+  function minEdgeDist(lx:number,ly:number){
+    let m=Infinity;
+    for(let e=0;e<6;e++){
+      const d=distSeg(lx,ly,VX[e],VY[e],VX[(e+1)%6],VY[(e+1)%6]);
+      if(d<m)m=d;
+    }
+    return m;
+  }
+
+  // Simple seeded noise for fabric texture variation
+  function hash(x:number,y:number){
+    let h=(x*374761393+y*668265263+13)&0x7fffffff;
+    h=((h>>13)^h)*1274126177;h=((h>>16)^h);
+    return(h&255)/255;
+  }
+
+  for(let y=0;y<size;y++){
+    for(let x=0;x<size;x++){
+      const ty=((y%TILE_H)+TILE_H)%TILE_H;
+      const rowIdx=ty<CH?0:1;
+      const ly=rowIdx===0?ty:ty-CH;
+      const xOff=rowIdx===1?CW/2:0;
+      const lx=((x-xOff)%CW+CW)%CW;
+
+      const ed=minEdgeDist(lx,ly);
+      const i=(y*size+x)*4;
+
+      const noise=hash(x,y)*0.15-0.075;
+
+      if(ed<=THREAD){
+        const ripPhase=((x*0.7+y*1.1)%5);
+        const c=ripPhase<1.8?C_RIP:C_EDGE;
+        pix[i]=Math.min(255,Math.max(0,c[0]+c[0]*noise|0));
+        pix[i+1]=Math.min(255,Math.max(0,c[1]+c[1]*noise|0));
+        pix[i+2]=Math.min(255,Math.max(0,c[2]+c[2]*noise|0));
+      } else {
+        const gx=((x%3)+3)%3;
+        const gy=((y%3)+3)%3;
+        const weftLine=(gx===0||gy===0);
+        const bodyAlt=((Math.floor(x/CW)+Math.floor(y/CH))&1)===0;
+        const base=weftLine?C_DOT:(bodyAlt?C_BODY:C_BODY2);
+
+        const depthFade=Math.min(1,ed/20)*0.12+0.88;
+        pix[i]=Math.min(255,Math.max(0,(base[0]*depthFade+base[0]*noise)|0));
+        pix[i+1]=Math.min(255,Math.max(0,(base[1]*depthFade+base[1]*noise)|0));
+        pix[i+2]=Math.min(255,Math.max(0,(base[2]*depthFade+base[2]*noise)|0));
+      }
+      pix[i+3]=255;
+    }
+  }
+  return img;
 }
 
 // ─── PBR алгоритмы ────────────────────────────────────────────────────────
@@ -228,10 +299,10 @@ export default function Index() {
 
   useEffect(() => {
     setStatus("loading");
-    loadTextureImage(512).then(img => {
-      srcRef.current = img;
-      buildMaps(img, normalStr, aoRadius);
-    }).catch(() => setStatus("error"));
+    setTimeout(() => {
+      srcRef.current = generateHoneycomb(512);
+      buildMaps(srcRef.current, normalStr, aoRadius);
+    }, 20);
   }, []);
 
   const recompute = (ns: number, aor: number) => {
