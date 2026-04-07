@@ -2,20 +2,16 @@ import { useState, useEffect, useRef } from "react";
 
 const TEXTURE_URL = "https://cdn.poehali.dev/projects/5a15539d-2e23-46d4-9ae4-0b3d25a0b619/files/00ef52a8-d0e5-4c00-bf62-22a9c504d3b9.jpg";
 
-function loadTextureImage(size = 512): Promise<ImageData> {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-    img.onload = () => {
-      const c = document.createElement("canvas");
-      c.width = size; c.height = size;
-      const ctx = c.getContext("2d")!;
-      ctx.drawImage(img, 0, 0, size, size);
-      resolve(ctx.getImageData(0, 0, size, size));
-    };
-    img.onerror = () => reject(new Error("Failed to load texture"));
-    img.src = TEXTURE_URL;
-  });
+async function loadTextureImage(size = 512): Promise<ImageData> {
+  const resp = await fetch(TEXTURE_URL);
+  if (!resp.ok) throw new Error("Failed to load texture");
+  const blob = await resp.blob();
+  const bmp = await createImageBitmap(blob, { resizeWidth: size, resizeHeight: size });
+  const c = document.createElement("canvas");
+  c.width = size; c.height = size;
+  const ctx = c.getContext("2d")!;
+  ctx.drawImage(bmp, 0, 0);
+  return ctx.getImageData(0, 0, size, size);
 }
 
 // ─── PBR алгоритмы ────────────────────────────────────────────────────────
