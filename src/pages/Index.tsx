@@ -1,47 +1,58 @@
 import { useState, useEffect, useRef } from "react";
 
-// ─── Процедурная бесшовная текстура "honeycomb weave" ────────────────────────
+// ─── Oxford PVC Rip-Stop 600D Honeycomb ──────────────────────────────────────
 //
-// Точное воспроизведение оригинала:
+// Правильные шестиугольные соты (flat-top orientation).
 //
-// КЛЮЧЕВАЯ ГЕОМЕТРИЯ (что видно на фото):
-//   • Горизонтальные ряды ячеек, чередующихся в шахматном порядке
-//   • Каждая ячейка — вытянутый по горизонтали овал / "бочка"
-//   • Боковые стенки — мягкие S-кривые (вогнутые, как песочные часы)
-//   • НИТИ / КОНТУРЫ — СВЕТЛЫЕ (розово-красные), не тёмные!
-//   • ЗАПОЛНЕНИЕ ячейки — ТЁМНО-КРАСНОЕ с мелкими СВЕТЛЫМИ точками
-//   • Между рядами — светлая горизонтальная полоса (не перемычка)
+// Flat-top hex: вершины сверху/снизу горизонтальные.
+// Каждый шестиугольник определяется радиусом R (от центра до вершины).
 //
-// Бесшовный прямоугольный период: TW × 2*(CELL_H + GAP)
+//   Ширина hex  W = 2 * R
+//   Высота hex  H = sqrt(3) * R
+//
+//   Прямоугольный тайл для бесшовности:
+//     TX = W * 3/2  = 3R        (горизонтальный период)
+//     TY = H        = sqrt(3)*R (вертикальный период = 2 строки)
+//
+//   Чётные столбцы: центры на y = 0, H, 2H, ...
+//   Нечётные столбцы: центры на y = H/2, 3H/2, ...
+//
+// Визуал:
+//   • Рёбра между сотами — СВЕТЛЫЕ нити (рельеф ткани)
+//   • Тело ячейки — ТЁМНО-КРАСНОЕ (углубление в ткани)
+//   • Внутри ячеек — мелкая точечная текстура плетения
+//   • Рёбра имеют мелкую rip-stop насечку
 // ──────────────────────────────────────────────────────────────────────────────
 
 function generateHoneycomb(size = 512): ImageData {
+  // Радиус hex (от центра до вершины). ~5мм при 96dpi ≈ 19px
+  const R = 19;
+  const SQRT3 = Math.sqrt(3);
 
-  const TW     = 64;   // ширина ячейки
-  const CELL_H = 28;   // высота "тела" ячейки
-  const GAP    = 4;    // высота горизонтальной полоски между рядами
-  const ROW_H  = CELL_H + GAP; // полный шаг одного ряда = 32
-  const TILE_H = 2 * ROW_H;    // = 64, полный вертикальный период
+  // Размеры шестиугольника (flat-top)
+  const HEX_W = 2 * R;            // 38
+  const HEX_H = SQRT3 * R;        // ~32.9
 
-  // Ширина "горлышка" — минимальная ширина ячейки в середине (vignetting)
-  const NECK = 6;  // px от края до горлышка с каждой стороны
+  // Горизонтальный шаг между столбцами
+  const COL_STEP = HEX_W * 3 / 4; // = 1.5 * R = 28.5
+  // Вертикальный шаг между рядами
+  const ROW_STEP = HEX_H;         // ~32.9
 
-  // Толщина контурной нити
-  const THREAD = 2;
+  // Толщина ребра (светлая нить)
+  const EDGE = 2.2;
 
-  // ── Цвета (как на оригинале) ──────────────────────────────────────────────
-  // Светлая нить / контур / полоса
-  const C_LIGHT: [number,number,number] = [230, 80, 60];
-  // Тёмное заполнение ячейки
-  const C_DARK:  [number,number,number] = [155, 18, 12];
-  // Мелкие точки внутри ячейки (чуть светлее тёмного)
-  const C_DOT:   [number,number,number] = [185, 40, 30];
-  // Горизонтальная полоса между рядами — светлая
-  const C_GAP:   [number,number,number] = [220, 68, 50];
-  // Мелкие точки в горизонтальной полосе
-  const C_GAPDOT:[number,number,number] = [190, 45, 32];
+  // Шаг мелких точек текстуры плетения внутри ячейки
+  const WEFT = 3;
 
-  const DOTGRID = 4;  // шаг мелкой сетки точек
+  // ── Цвета ──────────────────────────────────────────────────────────────
+  // Ребро (светлая нить)
+  const C_EDGE: [number,number,number] = [225, 85, 65];
+  // Тело ячейки (тёмно-красное)
+  const C_BODY: [number,number,number] = [160, 22, 14];
+  // Точки текстуры плетения внутри ячейки (чуть светлее тела)
+  const C_WEFT: [number,number,number] = [130, 15, 10];
+  // Rip-stop насечка на рёбрах (мелкие тёмные штрихи)
+  const C_RIP:  [number,number,number] = [190, 50, 38];
 
   const c = document.createElement("canvas");
   c.width = size; c.height = size;
@@ -49,75 +60,92 @@ function generateHoneycomb(size = 512): ImageData {
   const img = ctx.createImageData(size, size);
   const pix = img.data;
 
-  // Функция: для данной высоты ly (0..CELL_H-1) считает X левой границы ячейки
-  // Форма — S-curve / косинусоида: широко у верха/низа, узко в середине
-  function borderLeft(ly: number): number {
-    // t: 0 у краёв → 1 в середине
-    const t = Math.abs(ly - CELL_H / 2) / (CELL_H / 2); // 1 у краёв, 0 в середине
-    // cos-интерполяция для мягкой S-кривой
-    const smooth = 0.5 + 0.5 * Math.cos(Math.PI * (1 - t)); // 0 у краёв, 1 в середине
-    return smooth * NECK;
+  // Signed distance до края правильного flat-top шестиугольника с центром (0,0)
+  // Возвращает: >0 внутри, <0 снаружи
+  function hexSDF(px: number, py: number): number {
+    // Flat-top hex: 3 пары параллельных граней
+    // Нормали граней под углами 0°, 60°, 120°
+    const ax = Math.abs(px);
+    const ay = Math.abs(py);
+
+    // Расстояние до 3 граней (flat-top):
+    // 1) Вертикальные грани: |x| ≤ R
+    const d1 = R - ax;
+    // 2) Диагональные грани: нормаль (cos60, sin60) = (0.5, sqrt3/2)
+    //    0.5*|x| + sqrt3/2*|y| ≤ R
+    const d2 = R - (0.5 * ax + SQRT3 / 2 * ay);
+    // 3) Грань (cos120, sin120) = (-0.5, sqrt3/2) → та же формула что d2
+    //    из-за abs уже учтена
+
+    return Math.min(d1, d2);
   }
 
-  function sample(wx: number, wy: number): [number, number, number] {
-    const ty = ((wy % TILE_H) + TILE_H) % TILE_H;
+  // Найти ближайший центр hex для пикселя (px, py)
+  function nearestHexCenter(px: number, py: number): [number, number] {
+    // Колонка (приблизительная)
+    const col = Math.round(px / COL_STEP);
+    // Нечётные колонки сдвинуты на пол-строки
+    const rowOff = (col & 1) ? ROW_STEP / 2 : 0;
+    const row = Math.round((py - rowOff) / ROW_STEP);
 
-    const rowIdx = ty < ROW_H ? 0 : 1;
-    const localY = rowIdx === 0 ? ty : ty - ROW_H;
-
-    const xOff = rowIdx === 1 ? TW / 2 : 0;
-    const tx = ((wx - xOff) % TW + TW) % TW;
-
-    // ── Горизонтальная светлая полоса (GAP) ─────────────────────────
-    if (localY >= CELL_H) {
-      // Мелкие точки в полосе
-      const gx = ((wx % DOTGRID) + DOTGRID) % DOTGRID;
-      const gy = ((wy % DOTGRID) + DOTGRID) % DOTGRID;
-      if (gx < 2 && gy < 2) return C_GAPDOT;
-      return C_GAP;
+    // Проверяем 4 ближайших кандидата (текущий и соседние)
+    let bestDist = Infinity;
+    let bestCx = 0, bestCy = 0;
+    for (let dc = -1; dc <= 1; dc++) {
+      for (let dr = -1; dr <= 1; dr++) {
+        const c2 = col + dc;
+        const r2 = row + dr;
+        const off = (c2 & 1) ? ROW_STEP / 2 : 0;
+        const cx = c2 * COL_STEP;
+        const cy = r2 * ROW_STEP + off;
+        const ddx = px - cx, ddy = py - cy;
+        const dist = ddx * ddx + ddy * ddy;
+        if (dist < bestDist) {
+          bestDist = dist;
+          bestCx = cx;
+          bestCy = cy;
+        }
+      }
     }
-
-    // ── Ячейка (localY < CELL_H) ────────────────────────────────────
-    const ly = localY;
-
-    // Границы (S-кривая): левая и правая
-    const bL = borderLeft(ly);
-    const bR = TW - bL;
-
-    // Горизонтальная нить сверху
-    if (ly < THREAD) return C_LIGHT;
-    // Горизонтальная нить снизу
-    if (ly >= CELL_H - THREAD) return C_LIGHT;
-
-    // Левая боковая S-нить
-    if (tx >= bL - THREAD && tx <= bL + THREAD) return C_LIGHT;
-    // Правая боковая S-нить
-    if (tx >= bR - THREAD && tx <= bR + THREAD) return C_LIGHT;
-
-    // Вне ячейки (между S-кривыми соседних ячеек — это "тело" соседней ячейки
-    // из предыдущего/следующего столбца, но визуально это та же текстура)
-    if (tx < bL || tx > bR) {
-      // За пределами ячейки — тоже тёмная заливка с точками
-      const gx = ((wx % DOTGRID) + DOTGRID) % DOTGRID;
-      const gy = ((wy % DOTGRID) + DOTGRID) % DOTGRID;
-      if (gx < 2 && gy < 2) return C_DOT;
-      return C_DARK;
-    }
-
-    // Внутри ячейки — тёмная заливка с мелкими светлыми точками
-    const gx = ((wx % DOTGRID) + DOTGRID) % DOTGRID;
-    const gy = ((wy % DOTGRID) + DOTGRID) % DOTGRID;
-    if (gx < 2 && gy < 2) return C_DOT;
-    return C_DARK;
+    return [bestCx, bestCy];
   }
 
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
-      const [r, g, b] = sample(x, y);
+      const [cx, cy] = nearestHexCenter(x, y);
+      const lx = x - cx;
+      const ly = y - cy;
+      const dist = hexSDF(lx, ly);
+
       const i = (y * size + x) * 4;
-      pix[i]   = r;
-      pix[i+1] = g;
-      pix[i+2] = b;
+
+      if (dist < EDGE) {
+        // На ребре или снаружи (между ячейками) — светлая нить
+        // Rip-stop насечка: мелкие штрихи вдоль ребра
+        const ripPhase = (x + y * 1.3) % 6;
+        if (ripPhase < 1.5) {
+          pix[i]   = C_RIP[0];
+          pix[i+1] = C_RIP[1];
+          pix[i+2] = C_RIP[2];
+        } else {
+          pix[i]   = C_EDGE[0];
+          pix[i+1] = C_EDGE[1];
+          pix[i+2] = C_EDGE[2];
+        }
+      } else {
+        // Внутри ячейки — тёмное тело с текстурой плетения
+        const wx = ((x % WEFT) + WEFT) % WEFT;
+        const wy2 = ((y % WEFT) + WEFT) % WEFT;
+        if (wx === 0 || wy2 === 0) {
+          pix[i]   = C_WEFT[0];
+          pix[i+1] = C_WEFT[1];
+          pix[i+2] = C_WEFT[2];
+        } else {
+          pix[i]   = C_BODY[0];
+          pix[i+1] = C_BODY[1];
+          pix[i+2] = C_BODY[2];
+        }
+      }
       pix[i+3] = 255;
     }
   }
