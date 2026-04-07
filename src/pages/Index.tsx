@@ -1,133 +1,117 @@
 import { useState, useEffect, useRef } from "react";
 
-// ─── Процедурная бесшовная текстура "вафельная вязка с шестиугольными ячейками" ──
+// ─── Процедурная бесшовная текстура "honeycomb weave" ────────────────────────
 //
-// Геометрия по оригиналу:
-//   • Крупные ячейки — вытянутые по горизонтали шестиугольники (flat-top)
-//     с синусоидальными боковыми краями (имитация вязки)
-//   • Ячейки расположены в шахматном порядке (чётные ряды сдвинуты на CW/2)
-//   • Горизонтальные перемычки между рядами — узкие полосы с точечным узором
-//   • Внутри ячейки — мелкая сетка точек (рельефная вязка)
+// Оригинал: тканый узор с ячейками типа "bow-tie" / "бабочка".
+// Структура одной тайл-ячейки (ширина TW × высота TH):
 //
-// Бесшовность гарантируется выбором размера холста кратным периоду:
-//   TX = CW (ширина ячейки), TY = CH (полный вертикальный период двух рядов)
+//   Ряд A (высота RA):  ──[dot grid]── | ──[waffle cell]──
+//   Ряд B (высота RB):  горизонтальная полоса с мелкими квадратами-точками
+//   Ряд C (высота RC):  то же что A, но сдвинут на TW/2 (шахматный порядок)
+//   Ряд D (высота RB):  ещё одна полоса
+//
+// Прямоугольный бесшовный период: TW × (2*RA + 2*RB)
+//
+// Боковые границы ячейки — треугольные/зигзаг (сходятся к середине по высоте),
+// создавая форму "песочных часов" / bow-tie.
 // ──────────────────────────────────────────────────────────────────────────────
 
 function generateHoneycomb(size = 512): ImageData {
-  // ── Параметры ячейки ──────────────────────────────────────────────────
-  const CW   = 64;    // ширина ячейки (горизонтальный период)
-  const CH   = 36;    // высота одного ряда ячеек
-  const BAND = 8;     // высота горизонтальной перемычки между рядами
-  const ROW_H = CH + BAND; // полный вертикальный шаг (44px)
 
-  // Амплитуда синусоиды на боковых краях ячейки
-  const WAVE_A = 5;
-  // Частота синусоиды (2 периода на ширину ячейки)
-  const WAVE_F = (2 * Math.PI) / CW;
+  // ── Размеры тайла ─────────────────────────────────────────────────────────
+  // Подбираем так, чтобы size (512) делился нацело на TW и TILE_H
+  const TW     = 32;   // ширина одной ячейки
+  const RA     = 20;   // высота строки с ячейкой
+  const RB     = 6;    // высота горизонтальной перемычки
+  const TILE_H = 2 * (RA + RB); // = 52  полный вертикальный период (2 ряда)
 
-  // ── Цвета (оттенки красного, как в оригинале) ────────────────────────
-  // Фон ячейки — основной красный
-  const C_CELL   = [195, 30, 20] as const;
-  // Нить/граница ячейки — тёмно-красный
-  const C_BORDER = [120, 12, 10] as const;
-  // Перемычка — чуть темнее ячейки
-  const C_BAND   = [155, 22, 15] as const;
-  // Точки внутри ячейки (мелкая сетка рельефа) — тёмные
-  const C_DOT    = [145, 20, 14] as const;
-  // Точки в перемычке — мелкие светлые/тёмные
-  const C_BDOT   = [105, 10, 8] as const;
+  // ── Цвета ────────────────────────────────────────────────────────────────
+  const BG    : [number,number,number] = [200, 28, 18];  // светлый красный (фон ячейки)
+  const DARK  : [number,number,number] = [115, 10,  8];  // тёмный (нити/границы)
+  const MID   : [number,number,number] = [160, 18, 12];  // средний (перемычки)
+  const MDOT  : [number,number,number] = [130, 12,  9];  // точки внутри ячейки
 
-  // Толщина нити (граница ячейки)
-  const BORDER = 2.5;
-  // Шаг мелкой сетки внутри ячейки
-  const GRID   = 7;
-  // Радиус точки в сетке
-  const DOT_R  = 1.2;
-  // Шаг точек в перемычке
-  const BDOT_STEP = 5;
+  // ── Параметры геометрии ───────────────────────────────────────────────────
+  const THREAD = 2;    // толщина нити (px)
+  const CELL_INNER_GRID = 6;  // шаг мелкой сетки внутри ячейки
+  const BDOT_STEP = 4; // шаг точек в перемычке
 
   const c = document.createElement("canvas");
   c.width = size; c.height = size;
   const ctx = c.getContext("2d")!;
   const img = ctx.createImageData(size, size);
-  const d = img.data;
+  const pix = img.data;
 
-  // Функция: вычисляет цвет пикселя (x, y) → [r, g, b]
-  function getColor(px: number, py: number): [number, number, number] {
-    // Нормализуем в прямоугольный период (2 ряда × ROW_H по вертикали, CW по горизонтали)
-    // Вертикальный период = 2 * ROW_H (чётные и нечётные ряды)
-    const PERIOD_Y = 2 * ROW_H;
-    const gy = ((py % PERIOD_Y) + PERIOD_Y) % PERIOD_Y;
-    const gx = ((px % CW) + CW) % CW;
+  function sample(wx: number, wy: number): [number, number, number] {
+    // ── тайловые координаты ───────────────────────────────────────────
+    const ty = ((wy % TILE_H) + TILE_H) % TILE_H;
 
-    // Определяем, в каком ряду мы находимся (0 или 1)
-    const rowIdx = gy < ROW_H ? 0 : 1;
-    const localY = gy < ROW_H ? gy : gy - ROW_H;
+    // Определяем: мы в ряду 0 (ty < RA+RB) или ряду 1 (ty >= RA+RB)
+    const rowIdx  = ty < (RA + RB) ? 0 : 1;
+    const localY  = rowIdx === 0 ? ty : ty - (RA + RB);
 
-    // Сдвиг по X для нечётного ряда
-    const xShift = rowIdx === 1 ? CW / 2 : 0;
-    const lx = ((px - xShift) % CW + CW) % CW;
-    const ly = localY;
+    // Сдвиг X для нечётных рядов
+    const xOff = rowIdx === 1 ? TW / 2 : 0;
+    const tx   = ((wx - xOff) % TW + TW) % TW;
 
-    // ── Зона горизонтальной перемычки ────────────────────────────────
-    if (ly >= CH && ly < CH + BAND) {
-      const by = ly - CH; // 0..BAND-1
-      // Точки в перемычке — регулярная сетка
-      const dotX = lx % BDOT_STEP;
-      const dotY = by % BDOT_STEP;
-      const dx = dotX - BDOT_STEP / 2;
-      const dy = dotY - BDOT_STEP / 2;
-      if (dx * dx + dy * dy < DOT_R * DOT_R * 1.8) return [...C_BDOT] as [number, number, number];
-      // Горизонтальные тонкие линии в перемычке
-      if (by === 0 || by === BAND - 1) return [...C_BORDER] as [number, number, number];
-      return [...C_BAND] as [number, number, number];
+    // ── ПЕРЕМЫЧКА (горизонтальная полоса) ─────────────────────────────
+    if (localY >= RA) {
+      const by = localY - RA; // 0..RB-1
+      // крайние линии перемычки — нить
+      if (by === 0 || by === RB - 1) return DARK;
+      // мелкие квадраты-точки в перемычке
+      const qx = tx % BDOT_STEP;
+      const qy = by % BDOT_STEP;
+      if (qx < BDOT_STEP - 1 && qy < BDOT_STEP - 1) {
+        // квадратик 2×2 пикселя
+        if (qx >= 1 && qx <= 2 && qy >= 1 && qy <= 2) return DARK;
+      }
+      return MID;
     }
 
-    // ── Зона ячейки (ly < CH) ─────────────────────────────────────────
-    // Синусоидальная граница по X:
-    // Левый край ячейки: x ≈ 0 + WAVE_A * sin(...)
-    // Правый край ячейки: x ≈ CW + WAVE_A * sin(...)  (совпадает с левым следующей)
-    // Нормаль к левой/правой границе — вертикальная синусоида
-    const phase = ly * WAVE_F;
-    const waveOffset = WAVE_A * Math.sin(phase);
+    // ── СТРОКА С ЯЧЕЙКОЙ ─────────────────────────────────────────────
+    const ly = localY; // 0..RA-1
 
-    // Расстояние до левого края (с синусоидой)
-    const distLeft  = lx - waveOffset;
-    // Расстояние до правого края (следующая ячейка зеркальна)
-    const distRight = CW - lx + waveOffset;
+    // Граница боковых сторон ячейки — треугольная (bow-tie / diamond):
+    // На высоте ly=0 и ly=RA-1 границы у КРАЁВ ячейки (tx≈0 и tx≈TW)
+    // На высоте ly=RA/2 (середина) границы СХОДЯТСЯ к центру (tx≈TW/2)
+    // Это создаёт форму "галстук-бабочка"
+    //
+    // Левая граница:  borderX_L = (ly / (RA/2)) * (TW/2 - THREAD/2)  при ly < RA/2
+    //                             симметрично при ly >= RA/2
+    // Правая граница = TW - borderX_L
 
-    // Граница сверху и снизу ячейки — прямые горизонтальные
-    const distTop    = ly;
-    const distBottom = CH - ly;
+    const halfRA  = RA / 2;
+    const t       = ly < halfRA ? (ly / halfRA) : ((RA - ly) / halfRA);
+    // t: 0 у краёв (верх/низ), 1 в середине
+    // borderX_L — X левой нити
+    const borderX_L = t * (TW / 2 - THREAD);
+    const borderX_R = TW - borderX_L;
 
-    // Минимальное расстояние до любой границы
-    const minDist = Math.min(Math.abs(distLeft), Math.abs(distRight), distTop, distBottom);
+    // Горизонтальные нити сверху и снизу строки
+    if (ly < THREAD || ly >= RA - THREAD) return DARK;
 
-    // Нить (граница)
-    if (minDist < BORDER || Math.abs(distLeft) < BORDER || Math.abs(distRight) < BORDER) {
-      return [...C_BORDER] as [number, number, number];
-    }
+    // Левая вертикальная (треугольная) нить
+    if (tx >= borderX_L && tx < borderX_L + THREAD) return DARK;
+    // Правая вертикальная (треугольная) нить
+    if (tx >= borderX_R - THREAD && tx < borderX_R) return DARK;
 
-    // Мелкая сетка точек внутри ячейки (рельефная вязка)
-    const gx2 = lx % GRID;
-    const gy2 = ly % GRID;
-    const ddx = gx2 - GRID / 2;
-    const ddy = gy2 - GRID / 2;
-    if (ddx * ddx + ddy * ddy < DOT_R * DOT_R) {
-      return [...C_DOT] as [number, number, number];
-    }
+    // Внутри ячейки — мелкая сетка точек (рельефная вязка)
+    const gx = tx % CELL_INNER_GRID;
+    const gy = ly % CELL_INNER_GRID;
+    if (gx === 0 && gy === 0) return MDOT;
 
-    return [...C_CELL] as [number, number, number];
+    return BG;
   }
 
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
-      const [r, g, b] = getColor(x, y);
+      const [r, g, b] = sample(x, y);
       const i = (y * size + x) * 4;
-      d[i]   = r;
-      d[i+1] = g;
-      d[i+2] = b;
-      d[i+3] = 255;
+      pix[i]   = r;
+      pix[i+1] = g;
+      pix[i+2] = b;
+      pix[i+3] = 255;
     }
   }
 
