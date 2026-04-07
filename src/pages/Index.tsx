@@ -2,39 +2,46 @@ import { useState, useEffect, useRef } from "react";
 
 // ─── Процедурная бесшовная текстура "honeycomb weave" ────────────────────────
 //
-// Оригинал: тканый узор с ячейками типа "bow-tie" / "бабочка".
-// Структура одной тайл-ячейки (ширина TW × высота TH):
+// Точное воспроизведение оригинала:
 //
-//   Ряд A (высота RA):  ──[dot grid]── | ──[waffle cell]──
-//   Ряд B (высота RB):  горизонтальная полоса с мелкими квадратами-точками
-//   Ряд C (высота RC):  то же что A, но сдвинут на TW/2 (шахматный порядок)
-//   Ряд D (высота RB):  ещё одна полоса
+// КЛЮЧЕВАЯ ГЕОМЕТРИЯ (что видно на фото):
+//   • Горизонтальные ряды ячеек, чередующихся в шахматном порядке
+//   • Каждая ячейка — вытянутый по горизонтали овал / "бочка"
+//   • Боковые стенки — мягкие S-кривые (вогнутые, как песочные часы)
+//   • НИТИ / КОНТУРЫ — СВЕТЛЫЕ (розово-красные), не тёмные!
+//   • ЗАПОЛНЕНИЕ ячейки — ТЁМНО-КРАСНОЕ с мелкими СВЕТЛЫМИ точками
+//   • Между рядами — светлая горизонтальная полоса (не перемычка)
 //
-// Прямоугольный бесшовный период: TW × (2*RA + 2*RB)
-//
-// Боковые границы ячейки — треугольные/зигзаг (сходятся к середине по высоте),
-// создавая форму "песочных часов" / bow-tie.
+// Бесшовный прямоугольный период: TW × 2*(CELL_H + GAP)
 // ──────────────────────────────────────────────────────────────────────────────
 
 function generateHoneycomb(size = 512): ImageData {
 
-  // ── Размеры тайла ─────────────────────────────────────────────────────────
-  // Подбираем так, чтобы size (512) делился нацело на TW и TILE_H
-  const TW     = 32;   // ширина одной ячейки
-  const RA     = 20;   // высота строки с ячейкой
-  const RB     = 6;    // высота горизонтальной перемычки
-  const TILE_H = 2 * (RA + RB); // = 52  полный вертикальный период (2 ряда)
+  const TW     = 64;   // ширина ячейки
+  const CELL_H = 28;   // высота "тела" ячейки
+  const GAP    = 4;    // высота горизонтальной полоски между рядами
+  const ROW_H  = CELL_H + GAP; // полный шаг одного ряда = 32
+  const TILE_H = 2 * ROW_H;    // = 64, полный вертикальный период
 
-  // ── Цвета ────────────────────────────────────────────────────────────────
-  const BG    : [number,number,number] = [200, 28, 18];  // светлый красный (фон ячейки)
-  const DARK  : [number,number,number] = [115, 10,  8];  // тёмный (нити/границы)
-  const MID   : [number,number,number] = [160, 18, 12];  // средний (перемычки)
-  const MDOT  : [number,number,number] = [130, 12,  9];  // точки внутри ячейки
+  // Ширина "горлышка" — минимальная ширина ячейки в середине (vignetting)
+  const NECK = 6;  // px от края до горлышка с каждой стороны
 
-  // ── Параметры геометрии ───────────────────────────────────────────────────
-  const THREAD = 2;    // толщина нити (px)
-  const CELL_INNER_GRID = 6;  // шаг мелкой сетки внутри ячейки
-  const BDOT_STEP = 4; // шаг точек в перемычке
+  // Толщина контурной нити
+  const THREAD = 2;
+
+  // ── Цвета (как на оригинале) ──────────────────────────────────────────────
+  // Светлая нить / контур / полоса
+  const C_LIGHT: [number,number,number] = [230, 80, 60];
+  // Тёмное заполнение ячейки
+  const C_DARK:  [number,number,number] = [155, 18, 12];
+  // Мелкие точки внутри ячейки (чуть светлее тёмного)
+  const C_DOT:   [number,number,number] = [185, 40, 30];
+  // Горизонтальная полоса между рядами — светлая
+  const C_GAP:   [number,number,number] = [220, 68, 50];
+  // Мелкие точки в горизонтальной полосе
+  const C_GAPDOT:[number,number,number] = [190, 45, 32];
+
+  const DOTGRID = 4;  // шаг мелкой сетки точек
 
   const c = document.createElement("canvas");
   c.width = size; c.height = size;
@@ -42,66 +49,66 @@ function generateHoneycomb(size = 512): ImageData {
   const img = ctx.createImageData(size, size);
   const pix = img.data;
 
+  // Функция: для данной высоты ly (0..CELL_H-1) считает X левой границы ячейки
+  // Форма — S-curve / косинусоида: широко у верха/низа, узко в середине
+  function borderLeft(ly: number): number {
+    // t: 0 у краёв → 1 в середине
+    const t = Math.abs(ly - CELL_H / 2) / (CELL_H / 2); // 1 у краёв, 0 в середине
+    // cos-интерполяция для мягкой S-кривой
+    const smooth = 0.5 + 0.5 * Math.cos(Math.PI * (1 - t)); // 0 у краёв, 1 в середине
+    return smooth * NECK;
+  }
+
   function sample(wx: number, wy: number): [number, number, number] {
-    // ── тайловые координаты ───────────────────────────────────────────
     const ty = ((wy % TILE_H) + TILE_H) % TILE_H;
 
-    // Определяем: мы в ряду 0 (ty < RA+RB) или ряду 1 (ty >= RA+RB)
-    const rowIdx  = ty < (RA + RB) ? 0 : 1;
-    const localY  = rowIdx === 0 ? ty : ty - (RA + RB);
+    const rowIdx = ty < ROW_H ? 0 : 1;
+    const localY = rowIdx === 0 ? ty : ty - ROW_H;
 
-    // Сдвиг X для нечётных рядов
     const xOff = rowIdx === 1 ? TW / 2 : 0;
-    const tx   = ((wx - xOff) % TW + TW) % TW;
+    const tx = ((wx - xOff) % TW + TW) % TW;
 
-    // ── ПЕРЕМЫЧКА (горизонтальная полоса) ─────────────────────────────
-    if (localY >= RA) {
-      const by = localY - RA; // 0..RB-1
-      // крайние линии перемычки — нить
-      if (by === 0 || by === RB - 1) return DARK;
-      // мелкие квадраты-точки в перемычке
-      const qx = tx % BDOT_STEP;
-      const qy = by % BDOT_STEP;
-      if (qx < BDOT_STEP - 1 && qy < BDOT_STEP - 1) {
-        // квадратик 2×2 пикселя
-        if (qx >= 1 && qx <= 2 && qy >= 1 && qy <= 2) return DARK;
-      }
-      return MID;
+    // ── Горизонтальная светлая полоса (GAP) ─────────────────────────
+    if (localY >= CELL_H) {
+      // Мелкие точки в полосе
+      const gx = ((wx % DOTGRID) + DOTGRID) % DOTGRID;
+      const gy = ((wy % DOTGRID) + DOTGRID) % DOTGRID;
+      if (gx < 2 && gy < 2) return C_GAPDOT;
+      return C_GAP;
     }
 
-    // ── СТРОКА С ЯЧЕЙКОЙ ─────────────────────────────────────────────
-    const ly = localY; // 0..RA-1
+    // ── Ячейка (localY < CELL_H) ────────────────────────────────────
+    const ly = localY;
 
-    // Граница боковых сторон ячейки — треугольная (bow-tie / diamond):
-    // На высоте ly=0 и ly=RA-1 границы у КРАЁВ ячейки (tx≈0 и tx≈TW)
-    // На высоте ly=RA/2 (середина) границы СХОДЯТСЯ к центру (tx≈TW/2)
-    // Это создаёт форму "галстук-бабочка"
-    //
-    // Левая граница:  borderX_L = (ly / (RA/2)) * (TW/2 - THREAD/2)  при ly < RA/2
-    //                             симметрично при ly >= RA/2
-    // Правая граница = TW - borderX_L
+    // Границы (S-кривая): левая и правая
+    const bL = borderLeft(ly);
+    const bR = TW - bL;
 
-    const halfRA  = RA / 2;
-    const t       = ly < halfRA ? (ly / halfRA) : ((RA - ly) / halfRA);
-    // t: 0 у краёв (верх/низ), 1 в середине
-    // borderX_L — X левой нити
-    const borderX_L = t * (TW / 2 - THREAD);
-    const borderX_R = TW - borderX_L;
+    // Горизонтальная нить сверху
+    if (ly < THREAD) return C_LIGHT;
+    // Горизонтальная нить снизу
+    if (ly >= CELL_H - THREAD) return C_LIGHT;
 
-    // Горизонтальные нити сверху и снизу строки
-    if (ly < THREAD || ly >= RA - THREAD) return DARK;
+    // Левая боковая S-нить
+    if (tx >= bL - THREAD && tx <= bL + THREAD) return C_LIGHT;
+    // Правая боковая S-нить
+    if (tx >= bR - THREAD && tx <= bR + THREAD) return C_LIGHT;
 
-    // Левая вертикальная (треугольная) нить
-    if (tx >= borderX_L && tx < borderX_L + THREAD) return DARK;
-    // Правая вертикальная (треугольная) нить
-    if (tx >= borderX_R - THREAD && tx < borderX_R) return DARK;
+    // Вне ячейки (между S-кривыми соседних ячеек — это "тело" соседней ячейки
+    // из предыдущего/следующего столбца, но визуально это та же текстура)
+    if (tx < bL || tx > bR) {
+      // За пределами ячейки — тоже тёмная заливка с точками
+      const gx = ((wx % DOTGRID) + DOTGRID) % DOTGRID;
+      const gy = ((wy % DOTGRID) + DOTGRID) % DOTGRID;
+      if (gx < 2 && gy < 2) return C_DOT;
+      return C_DARK;
+    }
 
-    // Внутри ячейки — мелкая сетка точек (рельефная вязка)
-    const gx = tx % CELL_INNER_GRID;
-    const gy = ly % CELL_INNER_GRID;
-    if (gx === 0 && gy === 0) return MDOT;
-
-    return BG;
+    // Внутри ячейки — тёмная заливка с мелкими светлыми точками
+    const gx = ((wx % DOTGRID) + DOTGRID) % DOTGRID;
+    const gy = ((wy % DOTGRID) + DOTGRID) % DOTGRID;
+    if (gx < 2 && gy < 2) return C_DOT;
+    return C_DARK;
   }
 
   for (let y = 0; y < size; y++) {
