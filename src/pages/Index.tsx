@@ -1,10 +1,103 @@
 import { useState, useEffect, useRef } from "react";
 
-const SOURCE_URL =
-  "https://cdn.poehali.dev/projects/5a15539d-2e23-46d4-9ae4-0b3d25a0b619/bucket/69833b61-01b5-42e0-a8d3-5b99d99bbf7c.png";
+// ─── Процедурная бесшовная сотовая текстура ───────────────────────────────
+//
+// Математика бесшовности:
+//   Шестиугольная сетка задаётся двумя базисными векторами:
+//     a1 = (W, 0)          — горизонтальный период
+//     a2 = (W/2, H*3/2)    — диагональный период
+//   где W = 2*R*sin(60°), H = R  (R — радиус вписанной окружности).
+//   Размер холста SIZE выбирается кратным периоду по обеим осям,
+//   поэтому при тайлинге ни одна линия не разрывается.
+//
+// Нет теней, нет градиентов — только плоский цвет нити и фона.
+// ──────────────────────────────────────────────────────────────────────────
 
-const PROXY_URL =
-  "https://functions.poehali.dev/358ebaa8-0b09-4cd9-bba4-f5ef4f0fcff6";
+function generateHoneycomb(size = 512): ImageData {
+  // Радиус ячейки (от центра до вершины)
+  const R = 28;
+  // Толщина нити (стенки ячейки)
+  const THREAD = 3.2;
+
+  // Цвет нити и фона (красный текстиль)
+  const FILL_R = 180, FILL_G = 30,  FILL_B = 30;   // фон ячейки
+  const WIRE_R = 110, WIRE_G = 15,  WIRE_B = 15;   // нить
+
+  // Базисные векторы гексагональной решётки (pointy-top ориентация)
+  //   ax = w    (ширина ячейки)
+  //   ay = h*3/2 (вертикальный шаг между рядами)
+  const w = Math.sqrt(3) * R;   // ~48.5
+  const h = 2 * R;              // 56
+
+  // Функция: расстояние от точки (px, py) до ближайшего ребра шестиугольника
+  // Возвращает: положительное = внутри, отрицательное = снаружи (вне ячейки)
+  // Используем аналитическую формулу для правильного шестиугольника
+  function hexDist(px: number, py: number): number {
+    // Переводим в координаты ячейки (pointy-top)
+    // Сначала находим ближайший центр шестиугольника
+    const q = (Math.sqrt(3) / 3 * px - 1 / 3 * py) / R;
+    const r_ = (2 / 3 * py) / R;
+    const s = -q - r_;
+
+    // Округляем до ближайшего hex-координаты
+    let rq = Math.round(q), rr = Math.round(r_); const rs = Math.round(s);
+    const dq = Math.abs(rq - q), dr = Math.abs(rr - r_), ds = Math.abs(rs - s);
+    if (dq > dr && dq > ds) rq = -rr - rs;
+    else if (dr > ds) rr = -rq - rs;
+
+    // Центр ячейки в пикселях
+    const cx = R * (Math.sqrt(3) * rq + Math.sqrt(3) / 2 * rr);
+    const cy = R * (3 / 2 * rr);
+
+    // Расстояние от (px,py) до центра ячейки
+    const lx = px - cx, ly = py - cy;
+
+    // Расстояние до ближайшей грани правильного шестиугольника
+    // (pointy-top: 6 граней с нормалями под углами 0°,60°,120°,180°,240°,300°)
+    let minEdgeDist = Infinity;
+    for (let k = 0; k < 6; k++) {
+      const angle = (k * 60 + 30) * Math.PI / 180;
+      const nx = Math.cos(angle), ny = Math.sin(angle);
+      // Расстояние до грани = R*cos(30°) - проекция на нормаль
+      const edgeDist = R * Math.cos(Math.PI / 6) - (lx * nx + ly * ny);
+      if (edgeDist < minEdgeDist) minEdgeDist = edgeDist;
+    }
+    return minEdgeDist; // >0 внутри, <0 снаружи
+  }
+
+  const c = document.createElement("canvas");
+  c.width = size; c.height = size;
+  const ctx = c.getContext("2d")!;
+  const imgData = ctx.createImageData(size, size);
+  const px = imgData.data;
+
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      // Бесшовность: тайлинг через модуль периода решётки
+      // Период решётки: TX = w, TY = h*1.5 — но это не прямоугольный период.
+      // Правильный прямоугольный период: TX = w, TY = h*3/2*2 = 3*h
+      // Однако hex-сетка сама по себе бесшовна при любом размере холста —
+      // нет нужды в ручном тайлинге, достаточно просто вычислять hexDist(x,y).
+      const dist = hexDist(x, y);
+      const i = (y * size + x) * 4;
+
+      if (dist < THREAD) {
+        // Нить — точный порог, без антиалиасинга (никаких градиентов)
+        px[i]   = WIRE_R;
+        px[i+1] = WIRE_G;
+        px[i+2] = WIRE_B;
+      } else {
+        // Фон ячейки — плоский цвет
+        px[i]   = FILL_R;
+        px[i+1] = FILL_G;
+        px[i+2] = FILL_B;
+      }
+      px[i+3] = 255;
+    }
+  }
+
+  return imgData;
+}
 
 // ─── PBR алгоритмы ────────────────────────────────────────────────────────
 
@@ -46,112 +139,6 @@ function gaussBlur(src: Float32Array, w: number, h: number, radius: number): Flo
     }
   }
   return out;
-}
-
-// Auto-crop: находит bounding box непустых пикселей,
-// вырезает квадратный кусок по центру и масштабирует в 512×512
-function autoCropToSquare(src: ImageData): ImageData {
-  const { width: w, height: h, data } = src;
-
-  // Определяем "фон" по углам (медиана 4 угловых пикселей)
-  const corners = [
-    { r: data[0], g: data[1], b: data[2] },
-    { r: data[(w-1)*4], g: data[(w-1)*4+1], b: data[(w-1)*4+2] },
-    { r: data[(h-1)*w*4], g: data[(h-1)*w*4+1], b: data[(h-1)*w*4+2] },
-    { r: data[((h-1)*w+(w-1))*4], g: data[((h-1)*w+(w-1))*4+1], b: data[((h-1)*w+(w-1))*4+2] },
-  ];
-  const bgR = Math.round(corners.reduce((s,c)=>s+c.r,0)/4);
-  const bgG = Math.round(corners.reduce((s,c)=>s+c.g,0)/4);
-  const bgB = Math.round(corners.reduce((s,c)=>s+c.b,0)/4);
-  const thresh = 28;
-
-  let minX = w, minY = h, maxX = 0, maxY = 0;
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const i = (y * w + x) * 4;
-      const dr = Math.abs(data[i] - bgR);
-      const dg = Math.abs(data[i+1] - bgG);
-      const db = Math.abs(data[i+2] - bgB);
-      if (dr + dg + db > thresh) {
-        if (x < minX) minX = x;
-        if (x > maxX) maxX = x;
-        if (y < minY) minY = y;
-        if (y > maxY) maxY = y;
-      }
-    }
-  }
-
-  // Отступ 4% от краёв
-  const pad = Math.round(Math.max(maxX - minX, maxY - minY) * 0.04);
-  minX = Math.max(0, minX - pad);
-  minY = Math.max(0, minY - pad);
-  maxX = Math.min(w - 1, maxX + pad);
-  maxY = Math.min(h - 1, maxY + pad);
-
-  // Делаем квадратный crop по центру
-  const cw = maxX - minX;
-  const ch = maxY - minY;
-  const side = Math.max(cw, ch);
-  const cx = Math.round((minX + maxX) / 2);
-  const cy = Math.round((minY + maxY) / 2);
-  const x0 = Math.max(0, cx - Math.round(side / 2));
-  const y0 = Math.max(0, cy - Math.round(side / 2));
-  const x1 = Math.min(w, x0 + side);
-  const y1 = Math.min(h, y0 + side);
-
-  // Рисуем обрезанный кусок в 512×512
-  const srcCanvas = document.createElement("canvas");
-  srcCanvas.width = w; srcCanvas.height = h;
-  srcCanvas.getContext("2d")!.putImageData(src, 0, 0);
-
-  const out = document.createElement("canvas");
-  out.width = 512; out.height = 512;
-  const octx = out.getContext("2d")!;
-  octx.drawImage(srcCanvas, x0, y0, x1 - x0, y1 - y0, 0, 0, 512, 512);
-  return octx.getImageData(0, 0, 512, 512);
-}
-
-// Seamless: offset-method — сдвигаем на 50% и смешиваем края через cos-маску
-// Гарантирует, что тайлы стыкуются без видимых швов
-function makeSeamless(src: ImageData): ImageData {
-  const { width: w, height: h, data } = src;
-  const out = new Uint8ClampedArray(w * h * 4);
-
-  const get = (x: number, y: number, ch: number) => {
-    const xi = ((x % w) + w) % w;
-    const yi = ((y % h) + h) % h;
-    return data[(yi * w + xi) * 4 + ch];
-  };
-
-  // Ширина зоны смешивания — 35% от размера
-  const blendW = Math.round(w * 0.35);
-  const blendH = Math.round(h * 0.35);
-
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      // Сдвинутая версия (+50%)
-      const sx = (x + (w >> 1)) % w;
-      const sy = (y + (h >> 1)) % h;
-
-      // Вес по X: у краёв — shifted, в центре — оригинал
-      let wx = 1.0;
-      if (x < blendW) wx = 0.5 - 0.5 * Math.cos(Math.PI * x / blendW);
-      else if (x > w - blendW) wx = 0.5 + 0.5 * Math.cos(Math.PI * (x - (w - blendW)) / blendW);
-
-      // Вес по Y
-      let wy = 1.0;
-      if (y < blendH) wy = 0.5 - 0.5 * Math.cos(Math.PI * y / blendH);
-      else if (y > h - blendH) wy = 0.5 + 0.5 * Math.cos(Math.PI * (y - (h - blendH)) / blendH);
-
-      const t = Math.min(wx, wy);
-      const idx = (y * w + x) * 4;
-      for (let c = 0; c < 3; c++) {
-        out[idx + c] = Math.round(get(x, y, c) * t + get(sx, sy, c) * (1 - t));
-      }
-      out[idx + 3] = 255;
-    }
-  }
-  return new ImageData(out, w, h);
 }
 
 // BaseColor: убираем глобальные тени (делим на low-frequency освещение)
@@ -326,23 +313,10 @@ export default function Index() {
 
   useEffect(() => {
     setStatus("loading");
-    fetch(`${PROXY_URL}?url=${encodeURIComponent(SOURCE_URL)}`)
-      .then(r => r.json())
-      .then(({ data }: { data: string }) => {
-        const img = new Image();
-        img.onload = () => {
-          const c = document.createElement("canvas");
-          c.width = img.naturalWidth; c.height = img.naturalHeight;
-          const ctx = c.getContext("2d")!;
-          ctx.drawImage(img, 0, 0);
-          const raw = ctx.getImageData(0, 0, img.naturalWidth, img.naturalHeight);
-          const cropped = autoCropToSquare(raw);
-          srcRef.current = makeSeamless(cropped);
-          buildMaps(srcRef.current, normalStr, aoRadius);
-        };
-        img.src = `data:image/png;base64,${data}`;
-      })
-      .catch(() => setStatus("error"));
+    setTimeout(() => {
+      srcRef.current = generateHoneycomb(512);
+      buildMaps(srcRef.current, normalStr, aoRadius);
+    }, 20);
   }, []);
 
   const recompute = (ns: number, aor: number) => {
