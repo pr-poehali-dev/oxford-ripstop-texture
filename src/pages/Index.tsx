@@ -187,6 +187,22 @@ function makeGloss(src: ImageData): ImageData {
   return out;
 }
 
+function colorizeTexture(src: ImageData, hex: string): ImageData {
+  const r0 = parseInt(hex.slice(1,3), 16);
+  const g0 = parseInt(hex.slice(3,5), 16);
+  const b0 = parseInt(hex.slice(5,7), 16);
+  const { width: w, height: h, data } = src;
+  const out = new ImageData(w, h);
+  for (let i = 0; i < w * h; i++) {
+    const l = luma(data[i*4], data[i*4+1], data[i*4+2]) / 255;
+    out.data[i*4]   = Math.max(0, Math.min(255, Math.round(r0 * l)));
+    out.data[i*4+1] = Math.max(0, Math.min(255, Math.round(g0 * l)));
+    out.data[i*4+2] = Math.max(0, Math.min(255, Math.round(b0 * l)));
+    out.data[i*4+3] = 255;
+  }
+  return out;
+}
+
 function toDataURL(id: ImageData): string {
   const c = document.createElement("canvas");
   c.width = id.width; c.height = id.height;
@@ -215,13 +231,15 @@ export default function Index() {
   const [normalStr, setNormalStr] = useState(8);
   const [aoRadius, setAoRadius]   = useState(4);
   const [tiling, setTiling]       = useState(1);
+  const [fabricColor, setFabricColor] = useState("#808080");
   const srcRef = useRef<ImageData | null>(null);
 
-  const buildMaps = (img: ImageData, ns: number, aor: number) => {
+  const buildMaps = (img: ImageData, ns: number, aor: number, color: string) => {
     setStatus("processing");
     setTimeout(() => {
+      const colored = color === "#808080" ? img : colorizeTexture(img, color);
       setUrls({
-        baseColor: toDataURL(makeBaseColor(img)),
+        baseColor: toDataURL(makeBaseColor(colored)),
         normal:    toDataURL(makeNormal(img, ns)),
         roughness: toDataURL(makeRoughness(img)),
         ao:        toDataURL(makeAO(img, aor)),
@@ -235,12 +253,12 @@ export default function Index() {
     setStatus("loading");
     loadTextureViaProxy(512).then(img => {
       srcRef.current = img;
-      buildMaps(img, normalStr, aoRadius);
+      buildMaps(img, normalStr, aoRadius, fabricColor);
     }).catch(() => setStatus("error"));
   }, []);
 
-  const recompute = (ns: number, aor: number) => {
-    if (srcRef.current) buildMaps(srcRef.current, ns, aor);
+  const recompute = (ns: number, aor: number, color: string) => {
+    if (srcRef.current) buildMaps(srcRef.current, ns, aor, color);
   };
 
   const download = () => {
@@ -394,7 +412,7 @@ export default function Index() {
                 NORMAL STRENGTH — {normalStr}
               </label>
               <input type="range" min={1} max={20} value={normalStr} style={{ width:"100%", accentColor:"#c62828" }}
-                onChange={e => { const v=Number(e.target.value); setNormalStr(v); recompute(v, aoRadius); }} />
+                onChange={e => { const v=Number(e.target.value); setNormalStr(v); recompute(v, aoRadius, fabricColor); }} />
               <div style={{ display:"flex", justifyContent:"space-between", marginTop:"4px", fontSize:"8px", color:"rgba(255,255,255,0.18)" }}>
                 <span>СЛАБО</span><span>СИЛЬНО</span>
               </div>
@@ -404,9 +422,27 @@ export default function Index() {
                 AO RADIUS — {aoRadius}px
               </label>
               <input type="range" min={1} max={12} value={aoRadius} style={{ width:"100%", accentColor:"#c62828" }}
-                onChange={e => { const v=Number(e.target.value); setAoRadius(v); recompute(normalStr, v); }} />
+                onChange={e => { const v=Number(e.target.value); setAoRadius(v); recompute(normalStr, v, fabricColor); }} />
               <div style={{ display:"flex", justifyContent:"space-between", marginTop:"4px", fontSize:"8px", color:"rgba(255,255,255,0.18)" }}>
                 <span>МАЛО</span><span>ГЛУБОКО</span>
+              </div>
+            </div>
+            <div style={{ flex:1, padding:"14px 18px", borderRight:"1px solid rgba(255,255,255,0.06)" }}>
+              <label style={{ display:"block", fontSize:"9px", letterSpacing:"0.18em", color:"rgba(198,40,40,0.65)", marginBottom:"8px" }}>
+                ЦВЕТ ТКАНИ
+              </label>
+              <div style={{ display:"flex", gap:"6px", flexWrap:"wrap" }}>
+                {["#808080","#c62828","#1565c0","#2e7d32","#f9a825","#4a148c","#bf360c","#00695c","#1a1a1a","#e0e0e0"].map(c => (
+                  <button key={c} onClick={() => { setFabricColor(c); recompute(normalStr, aoRadius, c); }} style={{
+                    width:"24px", height:"24px", borderRadius:"3px", border: fabricColor===c ? "2px solid #fff" : "1px solid rgba(255,255,255,0.15)",
+                    background: c, cursor:"pointer", boxShadow: fabricColor===c ? "0 0 8px rgba(255,255,255,0.3)" : "none",
+                  }} />
+                ))}
+                <label style={{ width:"24px", height:"24px", borderRadius:"3px", border:"1px dashed rgba(255,255,255,0.25)", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", position:"relative", overflow:"hidden" }}>
+                  <span style={{ fontSize:"12px", color:"rgba(255,255,255,0.4)" }}>+</span>
+                  <input type="color" value={fabricColor} onChange={e => { setFabricColor(e.target.value); recompute(normalStr, aoRadius, e.target.value); }}
+                    style={{ position:"absolute", opacity:0, width:"100%", height:"100%", cursor:"pointer" }} />
+                </label>
               </div>
             </div>
             <div style={{ flex:1, padding:"14px 18px" }}>
