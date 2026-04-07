@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 
-const TEXTURE_CDN = "https://cdn.poehali.dev/projects/5a15539d-2e23-46d4-9ae4-0b3d25a0b619/files/bbcedd3d-03a1-46e1-8f81-fed1392a8f52.jpg";
+const TEXTURE_CDN = "https://cdn.poehali.dev/projects/5a15539d-2e23-46d4-9ae4-0b3d25a0b619/bucket/747e9d96-a5e6-40a7-8ef3-b30e50b67d60.png";
 const PROXY_URL = "https://functions.poehali.dev/358ebaa8-0b09-4cd9-bba4-f5ef4f0fcff6";
 
 async function loadTextureViaProxy(size = 512): Promise<ImageData> {
