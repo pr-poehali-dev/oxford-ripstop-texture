@@ -1,11 +1,11 @@
 import { useState, useEffect, useRef } from "react";
 
 const TEXTURE_CDN = "https://cdn.poehali.dev/projects/5a15539d-2e23-46d4-9ae4-0b3d25a0b619/bucket/747e9d96-a5e6-40a7-8ef3-b30e50b67d60.png";
-const PROXY_URL = "https://functions.poehali.dev/358ebaa8-0b09-4cd9-bba4-f5ef4f0fcff6";
+const FLATTEN_URL = "https://functions.poehali.dev/76de743a-27ec-4cc9-ac1e-8908beb4387b";
 
-async function loadTextureViaProxy(size = 512): Promise<ImageData> {
-  const resp = await fetch(`${PROXY_URL}?url=${encodeURIComponent(TEXTURE_CDN)}`);
-  if (!resp.ok) throw new Error("Proxy error");
+async function loadFlattenedTexture(size = 512): Promise<ImageData> {
+  const resp = await fetch(`${FLATTEN_URL}?url=${encodeURIComponent(TEXTURE_CDN)}&size=${size}`);
+  if (!resp.ok) throw new Error("Flatten error");
   const json = await resp.json();
   const bin = atob(json.data);
   const arr = new Uint8Array(bin.length);
@@ -23,74 +23,6 @@ async function loadTextureViaProxy(size = 512): Promise<ImageData> {
 
 function luma(r: number, g: number, b: number) {
   return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-}
-
-function flattenTexture(src: ImageData): ImageData {
-  const { width: w, height: h, data } = src;
-  const rF = new Float32Array(w * h);
-  const gF = new Float32Array(w * h);
-  const bF = new Float32Array(w * h);
-  const gray = new Float32Array(w * h);
-  for (let i = 0; i < w * h; i++) {
-    rF[i] = data[i * 4];
-    gF[i] = data[i * 4 + 1];
-    bF[i] = data[i * 4 + 2];
-    gray[i] = luma(rF[i], gF[i], bF[i]);
-  }
-
-  const lowR = gaussBlur(rF, w, h, 60);
-  const lowG = gaussBlur(gF, w, h, 60);
-  const lowB = gaussBlur(bF, w, h, 60);
-
-  let avgR = 0, avgG = 0, avgB = 0;
-  for (let i = 0; i < w * h; i++) { avgR += lowR[i]; avgG += lowG[i]; avgB += lowB[i]; }
-  avgR /= w * h; avgG /= w * h; avgB /= w * h;
-
-  const flatR = new Float32Array(w * h);
-  const flatG = new Float32Array(w * h);
-  const flatB = new Float32Array(w * h);
-  for (let i = 0; i < w * h; i++) {
-    flatR[i] = Math.max(0, Math.min(255, rF[i] * avgR / Math.max(1, lowR[i])));
-    flatG[i] = Math.max(0, Math.min(255, gF[i] * avgG / Math.max(1, lowG[i])));
-    flatB[i] = Math.max(0, Math.min(255, bF[i] * avgB / Math.max(1, lowB[i])));
-  }
-
-  const flatGray = new Float32Array(w * h);
-  for (let i = 0; i < w * h; i++) flatGray[i] = luma(flatR[i], flatG[i], flatB[i]);
-  let meanL = 0;
-  for (let i = 0; i < w * h; i++) meanL += flatGray[i];
-  meanL /= w * h;
-  const localBlur = gaussBlur(flatGray, w, h, 8);
-  for (let i = 0; i < w * h; i++) {
-    const specRatio = flatGray[i] / Math.max(1, localBlur[i]);
-    if (specRatio > 1.15) {
-      const damp = 1.0 / specRatio;
-      flatR[i] *= damp;
-      flatG[i] *= damp;
-      flatB[i] *= damp;
-    }
-  }
-
-  let mn = 255, mx = 0;
-  for (let i = 0; i < w * h; i++) {
-    const l = luma(flatR[i], flatG[i], flatB[i]);
-    if (l < mn) mn = l;
-    if (l > mx) mx = l;
-  }
-  const range = Math.max(1, mx - mn);
-  const target = 0.85;
-
-  const out = new ImageData(w, h);
-  for (let i = 0; i < w * h; i++) {
-    const l = luma(flatR[i], flatG[i], flatB[i]);
-    const norm = (l - mn) / range;
-    const scale = (norm * target + (1 - target) * 0.5) * 255 / Math.max(1, l);
-    out.data[i * 4]     = Math.max(0, Math.min(255, Math.round(flatR[i] * scale)));
-    out.data[i * 4 + 1] = Math.max(0, Math.min(255, Math.round(flatG[i] * scale)));
-    out.data[i * 4 + 2] = Math.max(0, Math.min(255, Math.round(flatB[i] * scale)));
-    out.data[i * 4 + 3] = 255;
-  }
-  return out;
 }
 
 // Gaussian blur для float array (для нормализации теней)
@@ -319,8 +251,7 @@ export default function Index() {
 
   useEffect(() => {
     setStatus("loading");
-    loadTextureViaProxy(512).then(raw => {
-      const img = flattenTexture(raw);
+    loadFlattenedTexture(512).then(img => {
       srcRef.current = img;
       buildMaps(img, normalStr, aoRadius, fabricColor);
     }).catch(() => setStatus("error"));

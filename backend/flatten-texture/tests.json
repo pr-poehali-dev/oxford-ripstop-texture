@@ -1,0 +1,18 @@
+{
+  "tests": [
+    {
+      "name": "OPTIONS preflight",
+      "method": "OPTIONS",
+      "path": "/",
+      "expectedStatus": 200
+    },
+    {
+      "name": "Flatten texture",
+      "method": "GET",
+      "path": "/?url=https://cdn.poehali.dev/projects/5a15539d-2e23-46d4-9ae4-0b3d25a0b619/bucket/747e9d96-a5e6-40a7-8ef3-b30e50b67d60.png&size=512",
+      "expectedStatus": 200,
+      "expectedBody": {"data": "string"},
+      "bodyMatcher": "partial"
+    }
+  ]
+}
