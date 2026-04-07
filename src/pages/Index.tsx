@@ -1,200 +1,21 @@
 import { useState, useEffect, useRef } from "react";
 
-// ─── Oxford PVC Rip-Stop 600D Honeycomb ──────────────────────────────────────
-//
-// Вытянутые горизонтально шестиугольники (elongated hex, flat-top).
-//
-// Форма одной ячейки:
-//
-//        _______________
-//       /               \          ← верхняя наклонная грань (шеврон)
-//      /                 \
-//     /                   \
-//     \                   /
-//      \                 /
-//       \_______________/          ← нижняя наклонная грань (шеврон)
-//
-// Верх и низ — прямые горизонтальные отрезки длиной FLAT.
-// Боковые стороны — наклонные (как у шеврона / зигзага).
-//
-// Ряды чередуются в шахматном порядке (сдвиг на половину ширины).
-//
-// Прямоугольный бесшовный период:
-//   TX = FLAT + 2*SLANT_W   (полная ширина ячейки)
-//   TY = 2 * HALF_H         (два ряда = полный период)
-//
-// Визуал по оригиналу:
-//   • Контуры (рёбра) — СВЕТЛО-КРАСНЫЕ / розовые (нити выступают)
-//   • Тело ячейки — ТЁМНО-КРАСНОЕ (вдавленное плетение)
-//   • Внутри ячеек — мелкая точечная текстура (woven pattern)
-// ──────────────────────────────────────────────────────────────────────────────
+const TEXTURE_URL = "https://cdn.poehali.dev/projects/5a15539d-2e23-46d4-9ae4-0b3d25a0b619/files/9843c674-0a18-4a1e-9cad-83ae49de774b.jpg";
 
-function generateHoneycomb(size = 512): ImageData {
-  // ── Размеры ячейки ─────────────────────────────────────────────────────
-  // Длина прямого горизонтального отрезка (верх/низ)
-  const FLAT = 36;
-  // Ширина наклонного участка (от конца FLAT до острия зигзага)
-  const SLANT_W = 14;
-  // Половина высоты ячейки (от центра до верхнего/нижнего горизонтального ребра)
-  const HALF_H = 16;
-
-  // Полная ширина ячейки
-  const CW = FLAT + 2 * SLANT_W;  // = 64
-  // Полная высота одного ряда
-  const CH = 2 * HALF_H;           // = 32
-  // Бесшовный вертикальный период (2 ряда)
-  const TILE_H = 2 * CH;           // = 64
-
-  // Толщина нити (контурной линии)
-  const THREAD = 2.0;
-
-  // Шаг текстуры плетения внутри ячейки
-  const DOT_STEP = 4;
-  // Размер точки
-  const DOT_SZ = 1;
-
-  // ── Цвета ──────────────────────────────────────────────────────────────
-  // Нить/контур (светлый красный — рёбра выступают)
-  const C_EDGE: [number,number,number] = [230, 82, 62];
-  // Тело ячейки (тёмно-красный)
-  const C_BODY: [number,number,number] = [158, 20, 12];
-  // Точки текстуры плетения (ещё темнее)
-  const C_DOT:  [number,number,number] = [125, 12, 8];
-
-  const canv = document.createElement("canvas");
-  canv.width = size; canv.height = size;
-  const ctx = canv.getContext("2d")!;
-  const img = ctx.createImageData(size, size);
-  const pix = img.data;
-
-  // Signed distance от точки (lx, ly) до ближайшего ребра ячейки
-  // lx: 0..CW-1 (локальный X внутри ячейки)
-  // ly: 0..CH-1 (локальный Y внутри ячейки)
-  //
-  // Рёбра ячейки:
-  //   Верхнее горизонтальное: y = 0, x ∈ [SLANT_W, SLANT_W + FLAT]
-  //   Нижнее горизонтальное:  y = CH, x ∈ [SLANT_W, SLANT_W + FLAT]
-  //   Левый верхний наклонный: от (0, HALF_H) до (SLANT_W, 0)
-  //   Левый нижний наклонный:  от (0, HALF_H) до (SLANT_W, CH)
-  //   Правый верхний наклонный: от (CW, HALF_H) до (SLANT_W+FLAT, 0)
-  //   Правый нижний наклонный:  от (CW, HALF_H) до (SLANT_W+FLAT, CH)
-
-  function distToSegment(
-    px: number, py: number,
-    ax: number, ay: number,
-    bx: number, by: number
-  ): number {
-    const dx = bx - ax, dy = by - ay;
-    const len2 = dx * dx + dy * dy;
-    if (len2 === 0) return Math.sqrt((px-ax)*(px-ax)+(py-ay)*(py-ay));
-    let t = ((px - ax) * dx + (py - ay) * dy) / len2;
-    if (t < 0) t = 0; else if (t > 1) t = 1;
-    const nx = ax + t * dx, ny = ay + t * dy;
-    return Math.sqrt((px - nx) * (px - nx) + (py - ny) * (py - ny));
-  }
-
-  function minDistToEdges(lx: number, ly: number): number {
-    // 6 рёбер шестиугольника (вершины)
-    // V0 = (SLANT_W, 0)                — верх лево
-    // V1 = (SLANT_W + FLAT, 0)          — верх право
-    // V2 = (CW, HALF_H)                 — правый острый
-    // V3 = (SLANT_W + FLAT, CH)          — низ право
-    // V4 = (SLANT_W, CH)                — низ лево
-    // V5 = (0, HALF_H)                  — левый острый
-    const V = [
-      [SLANT_W, 0],
-      [SLANT_W + FLAT, 0],
-      [CW, HALF_H],
-      [SLANT_W + FLAT, CH],
-      [SLANT_W, CH],
-      [0, HALF_H],
-    ];
-
-    let minD = Infinity;
-    for (let e = 0; e < 6; e++) {
-      const [ax, ay] = V[e];
-      const [bx, by] = V[(e + 1) % 6];
-      const d = distToSegment(lx, ly, ax, ay, bx, by);
-      if (d < minD) minD = d;
-    }
-    return minD;
-  }
-
-  // Проверяем, находится ли точка внутри шестиугольника (ray-casting)
-  function insideHex(lx: number, ly: number): boolean {
-    const V = [
-      [SLANT_W, 0],
-      [SLANT_W + FLAT, 0],
-      [CW, HALF_H],
-      [SLANT_W + FLAT, CH],
-      [SLANT_W, CH],
-      [0, HALF_H],
-    ];
-    let inside = false;
-    for (let i = 0, j = 5; i < 6; j = i++) {
-      const [xi, yi] = V[i];
-      const [xj, yj] = V[j];
-      if ((yi > ly) !== (yj > ly) &&
-          lx < (xj - xi) * (ly - yi) / (yj - yi) + xi) {
-        inside = !inside;
-      }
-    }
-    return inside;
-  }
-
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      // Тайловые координаты
-      const ty = ((y % TILE_H) + TILE_H) % TILE_H;
-      const rowIdx = ty < CH ? 0 : 1;
-      const ly = rowIdx === 0 ? ty : ty - CH;
-      const xOff = rowIdx === 1 ? CW / 2 : 0;
-      const lx = ((x - xOff) % CW + CW) % CW;
-
-      // Расстояние до ближайшего ребра
-      const edgeDist = minDistToEdges(lx, ly);
-      const inside = insideHex(lx, ly);
-
-      const i = (y * size + x) * 4;
-
-      if (edgeDist <= THREAD) {
-        // На нити — светлый контур
-        pix[i]   = C_EDGE[0];
-        pix[i+1] = C_EDGE[1];
-        pix[i+2] = C_EDGE[2];
-      } else if (inside) {
-        // Внутри ячейки — тёмное тело с точечной текстурой
-        const gx = ((x % DOT_STEP) + DOT_STEP) % DOT_STEP;
-        const gy = ((y % DOT_STEP) + DOT_STEP) % DOT_STEP;
-        if (gx < DOT_SZ && gy < DOT_SZ) {
-          pix[i]   = C_DOT[0];
-          pix[i+1] = C_DOT[1];
-          pix[i+2] = C_DOT[2];
-        } else {
-          pix[i]   = C_BODY[0];
-          pix[i+1] = C_BODY[1];
-          pix[i+2] = C_BODY[2];
-        }
-      } else {
-        // Снаружи ячейки (зазор между сотами) — тоже тёмное
-        // Это тело соседней ячейки из сдвинутого ряда
-        const gx = ((x % DOT_STEP) + DOT_STEP) % DOT_STEP;
-        const gy = ((y % DOT_STEP) + DOT_STEP) % DOT_STEP;
-        if (gx < DOT_SZ && gy < DOT_SZ) {
-          pix[i]   = C_DOT[0];
-          pix[i+1] = C_DOT[1];
-          pix[i+2] = C_DOT[2];
-        } else {
-          pix[i]   = C_BODY[0];
-          pix[i+1] = C_BODY[1];
-          pix[i+2] = C_BODY[2];
-        }
-      }
-      pix[i+3] = 255;
-    }
-  }
-
-  return img;
+function loadTextureImage(size = 512): Promise<ImageData> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      const c = document.createElement("canvas");
+      c.width = size; c.height = size;
+      const ctx = c.getContext("2d")!;
+      ctx.drawImage(img, 0, 0, size, size);
+      resolve(ctx.getImageData(0, 0, size, size));
+    };
+    img.onerror = () => reject(new Error("Failed to load texture"));
+    img.src = TEXTURE_URL;
+  });
 }
 
 // ─── PBR алгоритмы ────────────────────────────────────────────────────────
@@ -411,10 +232,10 @@ export default function Index() {
 
   useEffect(() => {
     setStatus("loading");
-    setTimeout(() => {
-      srcRef.current = generateHoneycomb(512);
-      buildMaps(srcRef.current, normalStr, aoRadius);
-    }, 20);
+    loadTextureImage(512).then(img => {
+      srcRef.current = img;
+      buildMaps(img, normalStr, aoRadius);
+    }).catch(() => setStatus("error"));
   }, []);
 
   const recompute = (ns: number, aor: number) => {
