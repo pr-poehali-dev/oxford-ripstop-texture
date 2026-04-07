@@ -2,144 +2,188 @@ import { useState, useEffect, useRef } from "react";
 
 // ─── Oxford PVC Rip-Stop 600D Honeycomb ──────────────────────────────────────
 //
-// Правильные шестиугольные соты (flat-top orientation).
+// Вытянутые горизонтально шестиугольники (elongated hex, flat-top).
 //
-// Flat-top hex: вершины сверху/снизу горизонтальные.
-// Каждый шестиугольник определяется радиусом R (от центра до вершины).
+// Форма одной ячейки:
 //
-//   Ширина hex  W = 2 * R
-//   Высота hex  H = sqrt(3) * R
+//        _______________
+//       /               \          ← верхняя наклонная грань (шеврон)
+//      /                 \
+//     /                   \
+//     \                   /
+//      \                 /
+//       \_______________/          ← нижняя наклонная грань (шеврон)
 //
-//   Прямоугольный тайл для бесшовности:
-//     TX = W * 3/2  = 3R        (горизонтальный период)
-//     TY = H        = sqrt(3)*R (вертикальный период = 2 строки)
+// Верх и низ — прямые горизонтальные отрезки длиной FLAT.
+// Боковые стороны — наклонные (как у шеврона / зигзага).
 //
-//   Чётные столбцы: центры на y = 0, H, 2H, ...
-//   Нечётные столбцы: центры на y = H/2, 3H/2, ...
+// Ряды чередуются в шахматном порядке (сдвиг на половину ширины).
 //
-// Визуал:
-//   • Рёбра между сотами — СВЕТЛЫЕ нити (рельеф ткани)
-//   • Тело ячейки — ТЁМНО-КРАСНОЕ (углубление в ткани)
-//   • Внутри ячеек — мелкая точечная текстура плетения
-//   • Рёбра имеют мелкую rip-stop насечку
+// Прямоугольный бесшовный период:
+//   TX = FLAT + 2*SLANT_W   (полная ширина ячейки)
+//   TY = 2 * HALF_H         (два ряда = полный период)
+//
+// Визуал по оригиналу:
+//   • Контуры (рёбра) — СВЕТЛО-КРАСНЫЕ / розовые (нити выступают)
+//   • Тело ячейки — ТЁМНО-КРАСНОЕ (вдавленное плетение)
+//   • Внутри ячеек — мелкая точечная текстура (woven pattern)
 // ──────────────────────────────────────────────────────────────────────────────
 
 function generateHoneycomb(size = 512): ImageData {
-  // Радиус hex (от центра до вершины). ~5мм при 96dpi ≈ 19px
-  const R = 19;
-  const SQRT3 = Math.sqrt(3);
+  // ── Размеры ячейки ─────────────────────────────────────────────────────
+  // Длина прямого горизонтального отрезка (верх/низ)
+  const FLAT = 36;
+  // Ширина наклонного участка (от конца FLAT до острия зигзага)
+  const SLANT_W = 14;
+  // Половина высоты ячейки (от центра до верхнего/нижнего горизонтального ребра)
+  const HALF_H = 16;
 
-  // Размеры шестиугольника (flat-top)
-  const HEX_W = 2 * R;            // 38
-  const HEX_H = SQRT3 * R;        // ~32.9
+  // Полная ширина ячейки
+  const CW = FLAT + 2 * SLANT_W;  // = 64
+  // Полная высота одного ряда
+  const CH = 2 * HALF_H;           // = 32
+  // Бесшовный вертикальный период (2 ряда)
+  const TILE_H = 2 * CH;           // = 64
 
-  // Горизонтальный шаг между столбцами
-  const COL_STEP = HEX_W * 3 / 4; // = 1.5 * R = 28.5
-  // Вертикальный шаг между рядами
-  const ROW_STEP = HEX_H;         // ~32.9
+  // Толщина нити (контурной линии)
+  const THREAD = 2.0;
 
-  // Толщина ребра (светлая нить)
-  const EDGE = 2.2;
-
-  // Шаг мелких точек текстуры плетения внутри ячейки
-  const WEFT = 3;
+  // Шаг текстуры плетения внутри ячейки
+  const DOT_STEP = 4;
+  // Размер точки
+  const DOT_SZ = 1;
 
   // ── Цвета ──────────────────────────────────────────────────────────────
-  // Ребро (светлая нить)
-  const C_EDGE: [number,number,number] = [225, 85, 65];
-  // Тело ячейки (тёмно-красное)
-  const C_BODY: [number,number,number] = [160, 22, 14];
-  // Точки текстуры плетения внутри ячейки (чуть светлее тела)
-  const C_WEFT: [number,number,number] = [130, 15, 10];
-  // Rip-stop насечка на рёбрах (мелкие тёмные штрихи)
-  const C_RIP:  [number,number,number] = [190, 50, 38];
+  // Нить/контур (светлый красный — рёбра выступают)
+  const C_EDGE: [number,number,number] = [230, 82, 62];
+  // Тело ячейки (тёмно-красный)
+  const C_BODY: [number,number,number] = [158, 20, 12];
+  // Точки текстуры плетения (ещё темнее)
+  const C_DOT:  [number,number,number] = [125, 12, 8];
 
-  const c = document.createElement("canvas");
-  c.width = size; c.height = size;
-  const ctx = c.getContext("2d")!;
+  const canv = document.createElement("canvas");
+  canv.width = size; canv.height = size;
+  const ctx = canv.getContext("2d")!;
   const img = ctx.createImageData(size, size);
   const pix = img.data;
 
-  // Signed distance до края правильного flat-top шестиугольника с центром (0,0)
-  // Возвращает: >0 внутри, <0 снаружи
-  function hexSDF(px: number, py: number): number {
-    // Flat-top hex: 3 пары параллельных граней
-    // Нормали граней под углами 0°, 60°, 120°
-    const ax = Math.abs(px);
-    const ay = Math.abs(py);
+  // Signed distance от точки (lx, ly) до ближайшего ребра ячейки
+  // lx: 0..CW-1 (локальный X внутри ячейки)
+  // ly: 0..CH-1 (локальный Y внутри ячейки)
+  //
+  // Рёбра ячейки:
+  //   Верхнее горизонтальное: y = 0, x ∈ [SLANT_W, SLANT_W + FLAT]
+  //   Нижнее горизонтальное:  y = CH, x ∈ [SLANT_W, SLANT_W + FLAT]
+  //   Левый верхний наклонный: от (0, HALF_H) до (SLANT_W, 0)
+  //   Левый нижний наклонный:  от (0, HALF_H) до (SLANT_W, CH)
+  //   Правый верхний наклонный: от (CW, HALF_H) до (SLANT_W+FLAT, 0)
+  //   Правый нижний наклонный:  от (CW, HALF_H) до (SLANT_W+FLAT, CH)
 
-    // Расстояние до 3 граней (flat-top):
-    // 1) Вертикальные грани: |x| ≤ R
-    const d1 = R - ax;
-    // 2) Диагональные грани: нормаль (cos60, sin60) = (0.5, sqrt3/2)
-    //    0.5*|x| + sqrt3/2*|y| ≤ R
-    const d2 = R - (0.5 * ax + SQRT3 / 2 * ay);
-    // 3) Грань (cos120, sin120) = (-0.5, sqrt3/2) → та же формула что d2
-    //    из-за abs уже учтена
-
-    return Math.min(d1, d2);
+  function distToSegment(
+    px: number, py: number,
+    ax: number, ay: number,
+    bx: number, by: number
+  ): number {
+    const dx = bx - ax, dy = by - ay;
+    const len2 = dx * dx + dy * dy;
+    if (len2 === 0) return Math.sqrt((px-ax)*(px-ax)+(py-ay)*(py-ay));
+    let t = ((px - ax) * dx + (py - ay) * dy) / len2;
+    if (t < 0) t = 0; else if (t > 1) t = 1;
+    const nx = ax + t * dx, ny = ay + t * dy;
+    return Math.sqrt((px - nx) * (px - nx) + (py - ny) * (py - ny));
   }
 
-  // Найти ближайший центр hex для пикселя (px, py)
-  function nearestHexCenter(px: number, py: number): [number, number] {
-    // Колонка (приблизительная)
-    const col = Math.round(px / COL_STEP);
-    // Нечётные колонки сдвинуты на пол-строки
-    const rowOff = (col & 1) ? ROW_STEP / 2 : 0;
-    const row = Math.round((py - rowOff) / ROW_STEP);
+  function minDistToEdges(lx: number, ly: number): number {
+    // 6 рёбер шестиугольника (вершины)
+    // V0 = (SLANT_W, 0)                — верх лево
+    // V1 = (SLANT_W + FLAT, 0)          — верх право
+    // V2 = (CW, HALF_H)                 — правый острый
+    // V3 = (SLANT_W + FLAT, CH)          — низ право
+    // V4 = (SLANT_W, CH)                — низ лево
+    // V5 = (0, HALF_H)                  — левый острый
+    const V = [
+      [SLANT_W, 0],
+      [SLANT_W + FLAT, 0],
+      [CW, HALF_H],
+      [SLANT_W + FLAT, CH],
+      [SLANT_W, CH],
+      [0, HALF_H],
+    ];
 
-    // Проверяем 4 ближайших кандидата (текущий и соседние)
-    let bestDist = Infinity;
-    let bestCx = 0, bestCy = 0;
-    for (let dc = -1; dc <= 1; dc++) {
-      for (let dr = -1; dr <= 1; dr++) {
-        const c2 = col + dc;
-        const r2 = row + dr;
-        const off = (c2 & 1) ? ROW_STEP / 2 : 0;
-        const cx = c2 * COL_STEP;
-        const cy = r2 * ROW_STEP + off;
-        const ddx = px - cx, ddy = py - cy;
-        const dist = ddx * ddx + ddy * ddy;
-        if (dist < bestDist) {
-          bestDist = dist;
-          bestCx = cx;
-          bestCy = cy;
-        }
+    let minD = Infinity;
+    for (let e = 0; e < 6; e++) {
+      const [ax, ay] = V[e];
+      const [bx, by] = V[(e + 1) % 6];
+      const d = distToSegment(lx, ly, ax, ay, bx, by);
+      if (d < minD) minD = d;
+    }
+    return minD;
+  }
+
+  // Проверяем, находится ли точка внутри шестиугольника (ray-casting)
+  function insideHex(lx: number, ly: number): boolean {
+    const V = [
+      [SLANT_W, 0],
+      [SLANT_W + FLAT, 0],
+      [CW, HALF_H],
+      [SLANT_W + FLAT, CH],
+      [SLANT_W, CH],
+      [0, HALF_H],
+    ];
+    let inside = false;
+    for (let i = 0, j = 5; i < 6; j = i++) {
+      const [xi, yi] = V[i];
+      const [xj, yj] = V[j];
+      if ((yi > ly) !== (yj > ly) &&
+          lx < (xj - xi) * (ly - yi) / (yj - yi) + xi) {
+        inside = !inside;
       }
     }
-    return [bestCx, bestCy];
+    return inside;
   }
 
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
-      const [cx, cy] = nearestHexCenter(x, y);
-      const lx = x - cx;
-      const ly = y - cy;
-      const dist = hexSDF(lx, ly);
+      // Тайловые координаты
+      const ty = ((y % TILE_H) + TILE_H) % TILE_H;
+      const rowIdx = ty < CH ? 0 : 1;
+      const ly = rowIdx === 0 ? ty : ty - CH;
+      const xOff = rowIdx === 1 ? CW / 2 : 0;
+      const lx = ((x - xOff) % CW + CW) % CW;
+
+      // Расстояние до ближайшего ребра
+      const edgeDist = minDistToEdges(lx, ly);
+      const inside = insideHex(lx, ly);
 
       const i = (y * size + x) * 4;
 
-      if (dist < EDGE) {
-        // На ребре или снаружи (между ячейками) — светлая нить
-        // Rip-stop насечка: мелкие штрихи вдоль ребра
-        const ripPhase = (x + y * 1.3) % 6;
-        if (ripPhase < 1.5) {
-          pix[i]   = C_RIP[0];
-          pix[i+1] = C_RIP[1];
-          pix[i+2] = C_RIP[2];
+      if (edgeDist <= THREAD) {
+        // На нити — светлый контур
+        pix[i]   = C_EDGE[0];
+        pix[i+1] = C_EDGE[1];
+        pix[i+2] = C_EDGE[2];
+      } else if (inside) {
+        // Внутри ячейки — тёмное тело с точечной текстурой
+        const gx = ((x % DOT_STEP) + DOT_STEP) % DOT_STEP;
+        const gy = ((y % DOT_STEP) + DOT_STEP) % DOT_STEP;
+        if (gx < DOT_SZ && gy < DOT_SZ) {
+          pix[i]   = C_DOT[0];
+          pix[i+1] = C_DOT[1];
+          pix[i+2] = C_DOT[2];
         } else {
-          pix[i]   = C_EDGE[0];
-          pix[i+1] = C_EDGE[1];
-          pix[i+2] = C_EDGE[2];
+          pix[i]   = C_BODY[0];
+          pix[i+1] = C_BODY[1];
+          pix[i+2] = C_BODY[2];
         }
       } else {
-        // Внутри ячейки — тёмное тело с текстурой плетения
-        const wx = ((x % WEFT) + WEFT) % WEFT;
-        const wy2 = ((y % WEFT) + WEFT) % WEFT;
-        if (wx === 0 || wy2 === 0) {
-          pix[i]   = C_WEFT[0];
-          pix[i+1] = C_WEFT[1];
-          pix[i+2] = C_WEFT[2];
+        // Снаружи ячейки (зазор между сотами) — тоже тёмное
+        // Это тело соседней ячейки из сдвинутого ряда
+        const gx = ((x % DOT_STEP) + DOT_STEP) % DOT_STEP;
+        const gy = ((y % DOT_STEP) + DOT_STEP) % DOT_STEP;
+        if (gx < DOT_SZ && gy < DOT_SZ) {
+          pix[i]   = C_DOT[0];
+          pix[i+1] = C_DOT[1];
+          pix[i+2] = C_DOT[2];
         } else {
           pix[i]   = C_BODY[0];
           pix[i+1] = C_BODY[1];
