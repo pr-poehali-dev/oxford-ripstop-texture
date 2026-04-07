@@ -1,19 +1,16 @@
 import { useState, useEffect, useRef } from "react";
 
 function generateHoneycomb(size = 512): ImageData {
-  const FLAT = 36;
-  const SLANT_W = 14;
-  const HALF_H = 16;
-  const CW = FLAT + 2 * SLANT_W;
-  const CH = 2 * HALF_H;
-  const TILE_H = 2 * CH;
-  const THREAD = 2.0;
+  const S3 = Math.sqrt(3);
+  const R = 18;
+  const W = S3 * R;
+  const H = 2 * R;
+  const THREAD = 1.8;
 
   const C_EDGE: [number,number,number] = [215, 195, 165];
-  const C_BODY: [number,number,number] = [165, 140, 110];
-  const C_BODY2:[number,number,number] = [155, 130, 100];
-  const C_DOT:  [number,number,number] = [140, 118, 90];
-  const C_RIP:  [number,number,number] = [190, 168, 135];
+  const C_RIP:  [number,number,number] = [195, 175, 145];
+  const C_BODY: [number,number,number] = [168, 143, 113];
+  const C_DEEP: [number,number,number] = [145, 122, 95];
 
   const canv = document.createElement("canvas");
   canv.width = size; canv.height = size;
@@ -21,63 +18,62 @@ function generateHoneycomb(size = 512): ImageData {
   const img = ctx.createImageData(size, size);
   const pix = img.data;
 
-  const VX = [SLANT_W, SLANT_W + FLAT, CW, SLANT_W + FLAT, SLANT_W, 0];
-  const VY = [0, 0, HALF_H, CH, CH, HALF_H];
-
-  function distSeg(px:number,py:number,ax:number,ay:number,bx:number,by:number){
-    const dx=bx-ax,dy=by-ay,l2=dx*dx+dy*dy;
-    if(l2===0)return Math.hypot(px-ax,py-ay);
-    let t=((px-ax)*dx+(py-ay)*dy)/l2;
-    if(t<0)t=0;else if(t>1)t=1;
-    return Math.hypot(px-(ax+t*dx),py-(ay+t*dy));
-  }
-
-  function minEdgeDist(lx:number,ly:number){
-    let m=Infinity;
-    for(let e=0;e<6;e++){
-      const d=distSeg(lx,ly,VX[e],VY[e],VX[(e+1)%6],VY[(e+1)%6]);
-      if(d<m)m=d;
-    }
-    return m;
-  }
-
-  // Simple seeded noise for fabric texture variation
   function hash(x:number,y:number){
     let h=(x*374761393+y*668265263+13)&0x7fffffff;
     h=((h>>13)^h)*1274126177;h=((h>>16)^h);
     return(h&255)/255;
   }
 
+  function hexDist(px:number,py:number):number{
+    const ax=Math.abs(px), ay=Math.abs(py);
+    const d1=R-ay;
+    const d2=R-(0.5*ay+S3*0.5*ax);
+    return Math.min(d1,d2);
+  }
+
+  function nearestHex(px:number,py:number):[number,number]{
+    const row=Math.round(py/(H*0.75));
+    const off=(row&1)?W*0.5:0;
+    const col=Math.round((px-off)/W);
+    let bx=0,by=0,bd=Infinity;
+    for(let dr=-1;dr<=1;dr++){
+      for(let dc=-1;dc<=1;dc++){
+        const r2=row+dr,c2=col+dc;
+        const o2=(r2&1)?W*0.5:0;
+        const cx=c2*W+o2;
+        const cy=r2*H*0.75;
+        const dx=px-cx,dy=py-cy;
+        const d=dx*dx+dy*dy;
+        if(d<bd){bd=d;bx=cx;by=cy;}
+      }
+    }
+    return[bx,by];
+  }
+
   for(let y=0;y<size;y++){
     for(let x=0;x<size;x++){
-      const ty=((y%TILE_H)+TILE_H)%TILE_H;
-      const rowIdx=ty<CH?0:1;
-      const ly=rowIdx===0?ty:ty-CH;
-      const xOff=rowIdx===1?CW/2:0;
-      const lx=((x-xOff)%CW+CW)%CW;
+      const[cx,cy]=nearestHex(x,y);
+      const lx=x-cx, ly=y-cy;
+      const dist=hexDist(lx,ly);
 
-      const ed=minEdgeDist(lx,ly);
       const i=(y*size+x)*4;
+      const noise=hash(x,y)*0.12-0.06;
 
-      const noise=hash(x,y)*0.15-0.075;
-
-      if(ed<=THREAD){
+      if(dist<=THREAD){
         const ripPhase=((x*0.7+y*1.1)%5);
         const c=ripPhase<1.8?C_RIP:C_EDGE;
-        pix[i]=Math.min(255,Math.max(0,c[0]+c[0]*noise|0));
+        pix[i]  =Math.min(255,Math.max(0,c[0]+c[0]*noise|0));
         pix[i+1]=Math.min(255,Math.max(0,c[1]+c[1]*noise|0));
         pix[i+2]=Math.min(255,Math.max(0,c[2]+c[2]*noise|0));
       } else {
-        const gx=((x%3)+3)%3;
-        const gy=((y%3)+3)%3;
-        const weftLine=(gx===0||gy===0);
-        const bodyAlt=((Math.floor(x/CW)+Math.floor(y/CH))&1)===0;
-        const base=weftLine?C_DOT:(bodyAlt?C_BODY:C_BODY2);
-
-        const depthFade=Math.min(1,ed/20)*0.12+0.88;
-        pix[i]=Math.min(255,Math.max(0,(base[0]*depthFade+base[0]*noise)|0));
-        pix[i+1]=Math.min(255,Math.max(0,(base[1]*depthFade+base[1]*noise)|0));
-        pix[i+2]=Math.min(255,Math.max(0,(base[2]*depthFade+base[2]*noise)|0));
+        const t=Math.min(1,(dist-THREAD)/14);
+        const r=C_BODY[0]*t+C_DEEP[0]*(1-t);
+        const g=C_BODY[1]*t+C_DEEP[1]*(1-t);
+        const b=C_BODY[2]*t+C_DEEP[2]*(1-t);
+        const weft=((x%3===0)||(y%3===0))?-8:0;
+        pix[i]  =Math.min(255,Math.max(0,(r+r*noise+weft)|0));
+        pix[i+1]=Math.min(255,Math.max(0,(g+g*noise+weft)|0));
+        pix[i+2]=Math.min(255,Math.max(0,(b+b*noise+weft)|0));
       }
       pix[i+3]=255;
     }
