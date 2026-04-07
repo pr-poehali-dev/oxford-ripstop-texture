@@ -111,6 +111,49 @@ function autoCropToSquare(src: ImageData): ImageData {
   return octx.getImageData(0, 0, 512, 512);
 }
 
+// Seamless: offset-method — сдвигаем на 50% и смешиваем края через cos-маску
+// Гарантирует, что тайлы стыкуются без видимых швов
+function makeSeamless(src: ImageData): ImageData {
+  const { width: w, height: h, data } = src;
+  const out = new Uint8ClampedArray(w * h * 4);
+
+  const get = (x: number, y: number, ch: number) => {
+    const xi = ((x % w) + w) % w;
+    const yi = ((y % h) + h) % h;
+    return data[(yi * w + xi) * 4 + ch];
+  };
+
+  // Ширина зоны смешивания — 35% от размера
+  const blendW = Math.round(w * 0.35);
+  const blendH = Math.round(h * 0.35);
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      // Сдвинутая версия (+50%)
+      const sx = (x + (w >> 1)) % w;
+      const sy = (y + (h >> 1)) % h;
+
+      // Вес по X: у краёв — shifted, в центре — оригинал
+      let wx = 1.0;
+      if (x < blendW) wx = 0.5 - 0.5 * Math.cos(Math.PI * x / blendW);
+      else if (x > w - blendW) wx = 0.5 + 0.5 * Math.cos(Math.PI * (x - (w - blendW)) / blendW);
+
+      // Вес по Y
+      let wy = 1.0;
+      if (y < blendH) wy = 0.5 - 0.5 * Math.cos(Math.PI * y / blendH);
+      else if (y > h - blendH) wy = 0.5 + 0.5 * Math.cos(Math.PI * (y - (h - blendH)) / blendH);
+
+      const t = Math.min(wx, wy);
+      const idx = (y * w + x) * 4;
+      for (let c = 0; c < 3; c++) {
+        out[idx + c] = Math.round(get(x, y, c) * t + get(sx, sy, c) * (1 - t));
+      }
+      out[idx + 3] = 255;
+    }
+  }
+  return new ImageData(out, w, h);
+}
+
 // BaseColor: убираем глобальные тени (делим на low-frequency освещение)
 function makeBaseColor(src: ImageData): ImageData {
   const { width: w, height: h, data } = src;
@@ -293,7 +336,8 @@ export default function Index() {
           const ctx = c.getContext("2d")!;
           ctx.drawImage(img, 0, 0);
           const raw = ctx.getImageData(0, 0, img.naturalWidth, img.naturalHeight);
-          srcRef.current = autoCropToSquare(raw);
+          const cropped = autoCropToSquare(raw);
+          srcRef.current = makeSeamless(cropped);
           buildMaps(srcRef.current, normalStr, aoRadius);
         };
         img.src = `data:image/png;base64,${data}`;
