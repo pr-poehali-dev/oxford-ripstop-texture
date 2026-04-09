@@ -1,9 +1,9 @@
+import urllib.request
 import base64
 import io
 import json
-import math
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageFilter
 
 CORS = {
     'Access-Control-Allow-Origin': '*',
@@ -11,128 +11,100 @@ CORS = {
     'Access-Control-Allow-Headers': 'Content-Type',
 }
 
-
-def hex_dist(px, py, R):
-    ax, ay = abs(px), abs(py)
-    s3h = math.sqrt(3) * 0.5
-    return min(R - ay, R - (0.5 * ay + s3h * ax))
+TEXTURE_URL = "https://cdn.poehali.dev/projects/5a15539d-2e23-46d4-9ae4-0b3d25a0b619/files/395740c3-14ec-459d-a27d-0d0383112853.jpg"
 
 
-def nearest_hex(px, py, W, H):
-    row = round(py / (H * 0.75))
-    off = W * 0.5 if (row & 1) else 0.0
-    col = round((px - off) / W)
-    bx, by, bd = 0.0, 0.0, 1e18
-    for dr in (-1, 0, 1):
-        for dc in (-1, 0, 1):
-            r2, c2 = row + dr, col + dc
-            o2 = W * 0.5 if (r2 & 1) else 0.0
-            cx, cy = c2 * W + o2, r2 * H * 0.75
-            d = (px - cx) ** 2 + (py - cy) ** 2
-            if d < bd:
-                bd, bx, by = d, cx, cy
-    return bx, by
+def flatten_lighting(img_arr):
+    result = img_arr.astype(np.float64)
+    for radius in [120, 60, 30]:
+        pil_tmp = Image.fromarray(result.clip(0, 255).astype(np.uint8))
+        blurred = np.zeros_like(result)
+        for ch in range(3):
+            ch_blur = pil_tmp.split()[ch].filter(ImageFilter.GaussianBlur(radius=radius))
+            blurred[:, :, ch] = np.array(ch_blur, dtype=np.float64)
+        means = blurred.mean(axis=(0, 1), keepdims=True)
+        result = result * means / np.maximum(blurred, 1.0)
+    return result.clip(0, 255)
 
 
-def phash(x, y):
-    h = (x * 374761393 + y * 668265263 + 13) & 0x7FFFFFFF
-    h = ((h >> 13) ^ h) * 1274126177 & 0x7FFFFFFF
-    return ((h >> 16) ^ h & 255) / 255.0
+def unify_edges(result):
+    gray = np.mean(result, axis=2)
+    smooth = np.array(
+        Image.fromarray(gray.clip(0, 255).astype(np.uint8)).filter(
+            ImageFilter.GaussianBlur(radius=2)
+        ), dtype=np.float64
+    )
+    sx = np.zeros_like(smooth)
+    sy = np.zeros_like(smooth)
+    sx[:, 1:-1] = np.abs(smooth[:, 2:] - smooth[:, :-2]) / 2.0
+    sy[1:-1, :] = np.abs(smooth[2:, :] - smooth[:-2, :]) / 2.0
+    edge_str = np.sqrt(sx**2 + sy**2)
+
+    thresh = np.percentile(edge_str, 70)
+    edge_mask = edge_str > thresh
+    if edge_mask.sum() < 50:
+        return result
+
+    target = np.median(gray[edge_mask])
+    local = np.array(
+        Image.fromarray(gray.clip(0, 255).astype(np.uint8)).filter(
+            ImageFilter.GaussianBlur(radius=10)
+        ), dtype=np.float64
+    )
+    corr = np.ones_like(gray)
+    corr[edge_mask] = target / np.maximum(local[edge_mask], 1.0)
+
+    corr_smooth = np.array(
+        Image.fromarray((corr * 128).clip(0, 255).astype(np.uint8)).filter(
+            ImageFilter.GaussianBlur(radius=5)
+        ), dtype=np.float64
+    ) / 128.0
+
+    blend = np.minimum(edge_str / max(thresh, 1.0), 1.0)
+    final = 1.0 + (corr_smooth - 1.0) * blend
+    return (result * final[:, :, np.newaxis]).clip(0, 255)
 
 
-def generate_honeycomb(size=512):
-    S3 = math.sqrt(3)
-    R = 21.0
-    W = S3 * R
-    H = 2.0 * R
-    EDGE_T = 3.0
-    ANTI = 1.2
-
-    EDGE_BASE = 160
-    EDGE_RIP = 12
-    CELL_HI = 120
-    CELL_LO = 85
-    VERTEX_DIM = 0.55
-
-    img = np.zeros((size, size, 3), dtype=np.uint8)
-
-    for y in range(size):
-        fy = float(y)
-        for x in range(size):
-            fx = float(x)
-            cx, cy = nearest_hex(fx, fy, W, H)
-            lx, ly = fx - cx, fy - cy
-            d = hex_dist(lx, ly, R)
-            n = (phash(x, y) - 0.5) * 6.0
-
-            if d < EDGE_T + ANTI:
-                rip = math.sin((fx * 0.45 + fy * 0.25) * 0.9) * 0.5 + 0.5
-                el = EDGE_BASE + rip * EDGE_RIP + n * 0.4
-
-                alx, aly = abs(lx), abs(ly)
-                corner = 1.0
-                if aly > R * 0.82:
-                    corner = max(0.45, 1.0 - (aly - R * 0.82) / (R * 0.18) * 0.55)
-                side_d = R - (0.5 * aly + S3 * 0.5 * alx)
-                if side_d < R * 0.18:
-                    cf = max(0.45, side_d / (R * 0.18))
-                    corner = min(corner, cf)
-                el *= corner
-
-                if d < EDGE_T:
-                    v = int(max(0, min(255, el)))
-                else:
-                    blend = (d - EDGE_T) / ANTI
-                    depth = min(1.0, 0.0)
-                    cell_v = CELL_LO + (CELL_HI - CELL_LO) * depth
-                    v = int(max(0, min(255, el * (1.0 - blend) + cell_v * blend)))
-                img[y, x] = [v, v, v]
-            else:
-                depth = min(1.0, (d - EDGE_T - ANTI) / 10.0)
-                base = CELL_LO + (CELL_HI - CELL_LO) * depth
-
-                wx = math.sin(fx * 1.7) * 0.25
-                wy = math.sin(fy * 2.1) * 0.25
-                wc = math.sin((fx + fy) * 0.8) * 0.12
-                base += (wx + wy + wc) * 10
-
-                if x % 3 == 0 or y % 3 == 0:
-                    base -= 4.0
-
-                base += n
-                v = int(max(0, min(255, base)))
-                img[y, x] = [v, v, v]
-
-    return img
+def normalize(result):
+    gray = np.mean(result, axis=2)
+    lo, hi = np.percentile(gray, 2), np.percentile(gray, 98)
+    rng = max(hi - lo, 1.0)
+    norm = ((gray - lo) / rng).clip(0, 1)
+    target = norm * 180 + 40
+    scale = target / np.maximum(gray, 1.0)
+    return (result * scale[:, :, np.newaxis]).clip(0, 255).astype(np.uint8)
 
 
-def make_tileable(img_arr, size):
-    S3 = math.sqrt(3)
-    R = 21.0
-    W = S3 * R
-    H = 2.0 * R
+def make_seamless(img_arr, size=512):
+    h, w = img_arr.shape[:2]
+    if h != size or w != size:
+        img_arr = np.array(Image.fromarray(img_arr).resize((size, size), Image.LANCZOS))
+        h, w = size, size
 
-    cols = int(size / W)
-    rows = int(size / (H * 0.75))
-    if cols < 2:
-        cols = 2
-    if rows < 2:
-        rows = 2
-    if rows % 2 == 1:
-        rows += 1
+    blend_w = w // 5
+    result = img_arr.astype(np.float64)
 
-    tile_w = int(round(cols * W))
-    tile_h = int(round(rows * H * 0.75))
+    for i in range(blend_w):
+        t = i / blend_w
+        fade = 0.5 - 0.5 * np.cos(t * np.pi)
+        left = result[:, i, :].copy()
+        right = result[:, w - blend_w + i, :].copy()
+        result[:, i, :] = left * fade + right * (1 - fade)
+        result[:, w - blend_w + i, :] = right * fade + left * (1 - fade)
 
-    crop = img_arr[:min(tile_h, img_arr.shape[0]), :min(tile_w, img_arr.shape[1])]
-    out = Image.fromarray(crop)
-    if out.size != (size, size):
-        out = out.resize((size, size), Image.LANCZOS)
-    return out
+    for i in range(blend_w):
+        t = i / blend_w
+        fade = 0.5 - 0.5 * np.cos(t * np.pi)
+        top = result[i, :, :].copy()
+        bot = result[h - blend_w + i, :, :].copy()
+        result[i, :, :] = top * fade + bot * (1 - fade)
+        result[h - blend_w + i, :, :] = bot * fade + top * (1 - fade)
+
+    return Image.fromarray(result.clip(0, 255).astype(np.uint8))
 
 
 def handler(event: dict, context) -> dict:
-    """Генерирует процедурную текстуру Oxford 600D с идеальной геометрией гексагонов"""
+    """Загружает AI-текстуру, выравнивает грани и освещение, делает бесшовной"""
     if event.get('httpMethod') == 'OPTIONS':
         return {'statusCode': 200, 'headers': CORS, 'body': ''}
 
@@ -140,8 +112,17 @@ def handler(event: dict, context) -> dict:
     size = int(params.get('size', '512'))
     size = max(256, min(1024, size))
 
-    raw = generate_honeycomb(size + 64)
-    seamless = make_tileable(raw, size)
+    req = urllib.request.Request(TEXTURE_URL, headers={'User-Agent': 'Mozilla/5.0'})
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        raw = resp.read()
+
+    img = Image.open(io.BytesIO(raw)).convert('RGB')
+    arr = np.array(img)
+
+    arr = flatten_lighting(arr)
+    arr = unify_edges(arr)
+    arr = normalize(arr)
+    seamless = make_seamless(arr, size)
 
     buf = io.BytesIO()
     seamless.save(buf, format='PNG', optimize=True)

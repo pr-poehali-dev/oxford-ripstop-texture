@@ -7,7 +7,7 @@
       "expectedStatus": 200
     },
     {
-      "name": "Generate honeycomb texture",
+      "name": "Flatten AI texture",
       "method": "GET",
       "path": "/?size=256",
       "expectedStatus": 200,
