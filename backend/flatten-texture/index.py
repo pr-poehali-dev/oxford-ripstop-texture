@@ -11,12 +11,12 @@ CORS = {
     'Access-Control-Allow-Headers': 'Content-Type',
 }
 
-TEXTURE_URL = "https://cdn.poehali.dev/projects/5a15539d-2e23-46d4-9ae4-0b3d25a0b619/files/85e766d8-128e-4404-a23e-431765757cd8.jpg"
+TEXTURE_URL = "https://cdn.poehali.dev/projects/5a15539d-2e23-46d4-9ae4-0b3d25a0b619/files/06880bc5-a28f-41cf-8bc8-e0b9ae9eff70.jpg"
 
 
 def flatten_lighting(img_arr):
     result = img_arr.astype(np.float64)
-    for radius in [120, 60, 30]:
+    for radius in [150, 80, 40]:
         pil_tmp = Image.fromarray(result.clip(0, 255).astype(np.uint8))
         blurred = np.zeros_like(result)
         for ch in range(3):
@@ -25,6 +25,11 @@ def flatten_lighting(img_arr):
         means = blurred.mean(axis=(0, 1), keepdims=True)
         result = result * means / np.maximum(blurred, 1.0)
     return result.clip(0, 255)
+
+
+def desaturate_to_neutral(arr):
+    gray = np.mean(arr, axis=2, keepdims=True)
+    return (gray * np.ones((1, 1, 3))).clip(0, 255)
 
 
 def unify_edges(result):
@@ -65,12 +70,13 @@ def unify_edges(result):
     return (result * final[:, :, np.newaxis]).clip(0, 255)
 
 
-def normalize(result):
+def normalize_neutral(result, target_mid=145):
     gray = np.mean(result, axis=2)
-    lo, hi = np.percentile(gray, 2), np.percentile(gray, 98)
+    lo = np.percentile(gray, 1)
+    hi = np.percentile(gray, 99)
     rng = max(hi - lo, 1.0)
     norm = ((gray - lo) / rng).clip(0, 1)
-    target = norm * 180 + 40
+    target = norm * 160 + 65
     scale = target / np.maximum(gray, 1.0)
     return (result * scale[:, :, np.newaxis]).clip(0, 255).astype(np.uint8)
 
@@ -81,30 +87,45 @@ def make_seamless(img_arr, size=512):
         img_arr = np.array(Image.fromarray(img_arr).resize((size, size), Image.LANCZOS))
         h, w = size, size
 
-    blend_w = w // 5
+    blend_w = size // 4
     result = img_arr.astype(np.float64)
 
     for i in range(blend_w):
         t = i / blend_w
         fade = 0.5 - 0.5 * np.cos(t * np.pi)
+        j = w - blend_w + i
         left = result[:, i, :].copy()
-        right = result[:, w - blend_w + i, :].copy()
-        result[:, i, :] = left * fade + right * (1 - fade)
-        result[:, w - blend_w + i, :] = right * fade + left * (1 - fade)
+        right = result[:, j, :].copy()
+        mixed_l = left * fade + right * (1 - fade)
+        mixed_r = right * fade + left * (1 - fade)
+        result[:, i, :] = mixed_l
+        result[:, j, :] = mixed_r
 
     for i in range(blend_w):
         t = i / blend_w
         fade = 0.5 - 0.5 * np.cos(t * np.pi)
+        j = h - blend_w + i
         top = result[i, :, :].copy()
-        bot = result[h - blend_w + i, :, :].copy()
-        result[i, :, :] = top * fade + bot * (1 - fade)
-        result[h - blend_w + i, :, :] = bot * fade + top * (1 - fade)
+        bot = result[j, :, :].copy()
+        mixed_t = top * fade + bot * (1 - fade)
+        mixed_b = bot * fade + top * (1 - fade)
+        result[i, :, :] = mixed_t
+        result[j, :, :] = mixed_b
+
+    edge = 8
+    for i in range(edge):
+        t = i / edge
+        fade = t * t * (3 - 2 * t)
+        result[i, :, :] = result[i, :, :] * fade + result[edge, :, :] * (1 - fade)
+        result[h - 1 - i, :, :] = result[h - 1 - i, :, :] * fade + result[h - 1 - edge, :, :] * (1 - fade)
+        result[:, i, :] = result[:, i, :] * fade + result[:, edge, :] * (1 - fade)
+        result[:, w - 1 - i, :] = result[:, w - 1 - i, :] * fade + result[:, w - 1 - edge, :] * (1 - fade)
 
     return Image.fromarray(result.clip(0, 255).astype(np.uint8))
 
 
 def handler(event: dict, context) -> dict:
-    """Загружает AI-текстуру, выравнивает грани и освещение, делает бесшовной"""
+    """Загружает AI-текстуру Oxford 600D, выравнивает в нейтральный серый, делает бесшовной"""
     if event.get('httpMethod') == 'OPTIONS':
         return {'statusCode': 200, 'headers': CORS, 'body': ''}
 
@@ -120,8 +141,9 @@ def handler(event: dict, context) -> dict:
     arr = np.array(img)
 
     arr = flatten_lighting(arr)
+    arr = desaturate_to_neutral(arr)
     arr = unify_edges(arr)
-    arr = normalize(arr)
+    arr = normalize_neutral(arr)
     seamless = make_seamless(arr, size)
 
     buf = io.BytesIO()
