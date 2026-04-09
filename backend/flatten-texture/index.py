@@ -11,7 +11,7 @@ CORS = {
     'Access-Control-Allow-Headers': 'Content-Type',
 }
 
-TEXTURE_URL = "https://cdn.poehali.dev/projects/5a15539d-2e23-46d4-9ae4-0b3d25a0b619/files/395740c3-14ec-459d-a27d-0d0383112853.jpg"
+TEXTURE_URL = "https://cdn.poehali.dev/projects/5a15539d-2e23-46d4-9ae4-0b3d25a0b619/files/85e766d8-128e-4404-a23e-431765757cd8.jpg"
 
 
 def flatten_lighting(img_arr):
