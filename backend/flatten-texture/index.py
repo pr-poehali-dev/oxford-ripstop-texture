@@ -1,9 +1,10 @@
+import urllib.request
 import base64
 import io
 import json
 import math
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageFilter, ImageDraw
 
 CORS = {
     'Access-Control-Allow-Origin': '*',
@@ -11,118 +12,109 @@ CORS = {
     'Access-Control-Allow-Headers': 'Content-Type',
 }
 
+TEXTURE_URL = "https://cdn.poehali.dev/projects/5a15539d-2e23-46d4-9ae4-0b3d25a0b619/files/06880bc5-a28f-41cf-8bc8-e0b9ae9eff70.jpg"
+
 S3 = math.sqrt(3)
 
 
-def hex_dist(lx, ly, R):
-    ax, ay = abs(lx), abs(ly)
-    return min(R - ay, R - (0.5 * ay + S3 * 0.5 * ax))
+def flatten_lighting(img_arr):
+    result = img_arr.astype(np.float64)
+    for radius in [120, 60, 30]:
+        pil_tmp = Image.fromarray(result.clip(0, 255).astype(np.uint8))
+        blurred = np.zeros_like(result)
+        for ch in range(3):
+            ch_blur = pil_tmp.split()[ch].filter(ImageFilter.GaussianBlur(radius=radius))
+            blurred[:, :, ch] = np.array(ch_blur, dtype=np.float64)
+        means = blurred.mean(axis=(0, 1), keepdims=True)
+        result = result * means / np.maximum(blurred, 1.0)
+    return result.clip(0, 255)
 
 
-def nearest_hex_center(px, py, W, H):
-    row = round(py / (H * 0.75))
-    off = W * 0.5 if (row & 1) else 0.0
-    col = round((px - off) / W)
-    best_cx, best_cy, best_d = 0.0, 0.0, 1e18
-    for dr in (-1, 0, 1):
-        for dc in (-1, 0, 1):
-            r2, c2 = row + dr, col + dc
-            o2 = W * 0.5 if (r2 & 1) else 0.0
-            cx = c2 * W + o2
-            cy = r2 * H * 0.75
-            d = (px - cx) ** 2 + (py - cy) ** 2
-            if d < best_d:
-                best_d = d
-                best_cx = cx
-                best_cy = cy
-    return best_cx, best_cy
+def desaturate(arr):
+    gray = np.mean(arr, axis=2, keepdims=True)
+    return np.repeat(gray, 3, axis=2).clip(0, 255)
 
 
-def basketweave(x, y, thread_pitch):
-    px = x % thread_pitch
-    py = y % thread_pitch
-    hp = thread_pitch * 0.5
-    over_x = px < hp
-    over_y = py < hp
-    if over_x == over_y:
-        return 0.65
-    else:
-        return 0.45
+def normalize_levels(arr):
+    gray = np.mean(arr, axis=2)
+    lo = np.percentile(gray, 2)
+    hi = np.percentile(gray, 98)
+    rng = max(hi - lo, 1.0)
+    norm = ((gray - lo) / rng).clip(0, 1)
+    target = norm * 100 + 100
+    scale = target / np.maximum(gray, 1.0)
+    return (arr * scale[:, :, np.newaxis]).clip(0, 255).astype(np.uint8)
 
 
-def noise_hash(x, y):
-    h = (x * 374761393 + y * 668265263 + 13) & 0x7FFFFFFF
-    h = ((h >> 13) ^ h) * 1274126177 & 0x7FFFFFFF
-    return ((h >> 16) ^ (h & 255)) / 255.0
+def make_seamless_tile(img_arr, tile_size):
+    h, w = img_arr.shape[:2]
+    cx, cy = w // 2, h // 2
+    half = tile_size // 2
+    x0 = max(0, cx - half)
+    y0 = max(0, cy - half)
+    crop = img_arr[y0:y0+tile_size, x0:x0+tile_size].astype(np.float64)
+    ch, cw = crop.shape[:2]
+    if ch < tile_size or cw < tile_size:
+        crop = np.array(Image.fromarray(crop.clip(0,255).astype(np.uint8)).resize((tile_size, tile_size), Image.LANCZOS), dtype=np.float64)
+
+    blend_w = tile_size // 4
+    result = crop.copy()
+
+    for i in range(blend_w):
+        t = i / blend_w
+        fade = 0.5 - 0.5 * math.cos(t * math.pi)
+        j = tile_size - blend_w + i
+        left = result[:, i, :].copy()
+        right = result[:, j, :].copy()
+        result[:, i, :] = left * fade + right * (1 - fade)
+        result[:, j, :] = right * fade + left * (1 - fade)
+
+    for i in range(blend_w):
+        t = i / blend_w
+        fade = 0.5 - 0.5 * math.cos(t * math.pi)
+        j = tile_size - blend_w + i
+        top = result[i, :, :].copy()
+        bot = result[j, :, :].copy()
+        result[i, :, :] = top * fade + bot * (1 - fade)
+        result[j, :, :] = bot * fade + top * (1 - fade)
+
+    return result.clip(0, 255).astype(np.uint8)
 
 
-def generate_oxford_600d(size=1024):
-    R = 40.0
-    W = S3 * R
-    H = 2.0 * R
+def hex_vertices(cx, cy, R):
+    pts = []
+    for i in range(6):
+        angle = math.radians(60 * i + 30)
+        pts.append((cx + R * math.cos(angle), cy + R * math.sin(angle)))
+    return pts
 
-    EDGE_THICK = 5.0
-    ANTI = 1.5
-    THREAD_PITCH = 8.0
 
-    EDGE_VAL = 185.0
-    CELL_MID = 140.0
+def draw_hex_grid(size, cell_R, line_w):
+    W = S3 * cell_R
+    H = 2.0 * cell_R
 
-    cols_needed = int(math.ceil(size / W)) + 2
-    rows_needed = int(math.ceil(size / (H * 0.75))) + 2
-    if rows_needed % 2 == 1:
-        rows_needed += 1
+    img = Image.new('L', (size, size), 0)
+    draw = ImageDraw.Draw(img)
 
-    tile_w = int(round(cols_needed * W))
-    tile_h = int(round(rows_needed * H * 0.75))
-    gen_w = max(tile_w, size + 64)
-    gen_h = max(tile_h, size + 64)
+    rows = int(math.ceil(size / (H * 0.75))) + 4
+    cols = int(math.ceil(size / W)) + 4
 
-    img = np.zeros((gen_h, gen_w), dtype=np.float64)
+    for row in range(-2, rows):
+        for col in range(-2, cols):
+            off = W * 0.5 if (row & 1) else 0.0
+            cx = col * W + off
+            cy = row * H * 0.75
+            verts = hex_vertices(cx, cy, cell_R)
+            for i in range(6):
+                x1, y1 = verts[i]
+                x2, y2 = verts[(i + 1) % 6]
+                draw.line([(x1, y1), (x2, y2)], fill=255, width=line_w)
 
-    ys = np.arange(gen_h, dtype=np.float64)
-    xs = np.arange(gen_w, dtype=np.float64)
-
-    for y_int in range(gen_h):
-        fy = float(y_int)
-        for x_int in range(gen_w):
-            fx = float(x_int)
-            cx, cy = nearest_hex_center(fx, fy, W, H)
-            lx = fx - cx
-            ly = fy - cy
-            d = hex_dist(lx, ly, R)
-
-            n = (noise_hash(x_int, y_int) - 0.5) * 4.0
-
-            if d < EDGE_THICK + ANTI:
-                v = EDGE_VAL + n * 0.3
-
-                if d > EDGE_THICK:
-                    t = (d - EDGE_THICK) / ANTI
-                    bw = basketweave(x_int, y_int, THREAD_PITCH)
-                    cell_v = CELL_MID * bw / 0.55 + n
-                    v = v * (1.0 - t) + cell_v * t
-                img[y_int, x_int] = v
-            else:
-                bw = basketweave(x_int, y_int, THREAD_PITCH)
-                v = CELL_MID * bw / 0.55 + n
-
-                depth_fade = min(1.0, (d - EDGE_THICK - ANTI) / 8.0)
-                v -= depth_fade * 12.0
-
-                img[y_int, x_int] = v
-
-    img = np.clip(img, 0, 255)
-
-    crop = img[:tile_h, :tile_w]
-    pil = Image.fromarray(crop.astype(np.uint8), mode='L')
-    if pil.size[0] != size or pil.size[1] != size:
-        pil = pil.resize((size, size), Image.LANCZOS)
-    return pil
+    return np.array(img, dtype=np.float64) / 255.0
 
 
 def handler(event: dict, context) -> dict:
-    """Генерирует процедурную текстуру Oxford 600D: крупные гексагоны + basketweave + толстые грани"""
+    """Комбинирует AI-текстуру ткани с процедурной гексагональной ripstop-сеткой"""
     if event.get('httpMethod') == 'OPTIONS':
         return {'statusCode': 200, 'headers': CORS, 'body': ''}
 
@@ -130,11 +122,38 @@ def handler(event: dict, context) -> dict:
     size = int(params.get('size', '1024'))
     size = max(256, min(1024, size))
 
-    pil = generate_oxford_600d(size)
+    req = urllib.request.Request(TEXTURE_URL, headers={'User-Agent': 'Mozilla/5.0'})
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        raw = resp.read()
+    img = Image.open(io.BytesIO(raw)).convert('RGB')
+    arr = np.array(img)
 
-    rgb = Image.merge('RGB', [pil, pil, pil])
+    arr = flatten_lighting(arr)
+    arr = desaturate(arr)
+    arr = normalize_levels(arr)
+
+    tile = make_seamless_tile(arr, size)
+
+    cell_R = size / 16.0
+    line_w = max(2, int(round(size / 256.0)))
+
+    grid = draw_hex_grid(size, cell_R, line_w)
+    grid_blur = np.array(
+        Image.fromarray((grid * 255).clip(0,255).astype(np.uint8)).filter(
+            ImageFilter.GaussianBlur(radius=1.2)
+        ), dtype=np.float64
+    ) / 255.0
+
+    base = tile.astype(np.float64)
+    ridge_bright = 35.0
+    for ch in range(3):
+        base[:, :, ch] += grid_blur * ridge_bright
+
+    base = base.clip(0, 255).astype(np.uint8)
+
+    pil = Image.fromarray(base)
     buf = io.BytesIO()
-    rgb.save(buf, format='PNG', optimize=True)
+    pil.save(buf, format='PNG', optimize=True)
     encoded = base64.b64encode(buf.getvalue()).decode('utf-8')
 
     return {
