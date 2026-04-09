@@ -10,8 +10,8 @@ export const MAPS: Record<MapKey, { tag: string; label: string; hint: string }> 
   gloss:     { tag: "GLOSS",      label: "Блеск / Glossiness", hint: "Слот: Specular / Reflection" },
 };
 
-export async function loadFlattenedTexture(size = 1024): Promise<ImageData> {
-  const resp = await fetch(`${GENERATE_URL}?size=${size}`);
+export async function loadFlattenedTexture(size = 1024, variant = 2): Promise<ImageData> {
+  const resp = await fetch(`${GENERATE_URL}?size=${size}&variant=${variant}`);
   if (!resp.ok) throw new Error("Flatten error");
   const json = await resp.json();
   const bin = atob(json.data);

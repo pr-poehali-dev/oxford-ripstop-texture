@@ -12,6 +12,7 @@ export default function Index() {
   const [aoRadius, setAoRadius]   = useState(4);
   const [tiling, setTiling]       = useState(1);
   const [fabricColor, setFabricColor] = useState("#808080");
+  const [variant, setVariant] = useState(2);
   const srcRef = useRef<ImageData | null>(null);
 
   const buildMaps = (img: ImageData, ns: number, aor: number, color: string) => {
@@ -22,13 +23,15 @@ export default function Index() {
     }, 30);
   };
 
-  useEffect(() => {
+  const loadVariant = (v: number) => {
     setStatus("loading");
-    loadFlattenedTexture(512).then(img => {
+    loadFlattenedTexture(1024, v).then(img => {
       srcRef.current = img;
       buildMaps(img, normalStr, aoRadius, fabricColor);
     }).catch(() => setStatus("error"));
-  }, []);
+  };
+
+  useEffect(() => { loadVariant(variant); }, []);
 
   const recompute = (ns: number, aor: number, color: string) => {
     if (srcRef.current) buildMaps(srcRef.current, ns, aor, color);
@@ -87,6 +90,8 @@ export default function Index() {
           aoRadius={aoRadius} setAoRadius={setAoRadius}
           fabricColor={fabricColor} setFabricColor={setFabricColor}
           onRecompute={recompute}
+          variant={variant}
+          onVariantChange={(v) => { setVariant(v); loadVariant(v); }}
         />
         <ThumbnailPanel active={active} setActive={setActive} urls={urls} />
       </div>

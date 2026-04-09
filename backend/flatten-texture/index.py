@@ -12,11 +12,15 @@ CORS = {
     'Access-Control-Allow-Headers': 'Content-Type',
 }
 
-TEXTURE_URL = "https://cdn.poehali.dev/projects/5a15539d-2e23-46d4-9ae4-0b3d25a0b619/files/06880bc5-a28f-41cf-8bc8-e0b9ae9eff70.jpg"
+VARIANTS = {
+    "1": "https://cdn.poehali.dev/projects/5a15539d-2e23-46d4-9ae4-0b3d25a0b619/files/06880bc5-a28f-41cf-8bc8-e0b9ae9eff70.jpg",
+    "2": "https://cdn.poehali.dev/projects/5a15539d-2e23-46d4-9ae4-0b3d25a0b619/files/01222b9a-2659-4daa-937e-955313dcd5be.jpg",
+    "3": "https://cdn.poehali.dev/projects/5a15539d-2e23-46d4-9ae4-0b3d25a0b619/files/28ca8acc-fde6-4407-892f-6aeed886f9a4.jpg",
+    "4": "https://cdn.poehali.dev/projects/5a15539d-2e23-46d4-9ae4-0b3d25a0b619/files/1caa0a89-819c-4193-8c5e-51826f9fcb04.jpg",
+}
 
 
 def flatten_lighting(img_arr):
-    """Мягкое выравнивание освещения — сохраняет детали ткани"""
     result = img_arr.astype(np.float64)
     for radius in [100, 50]:
         pil_tmp = Image.fromarray(result.clip(0, 255).astype(np.uint8))
@@ -30,7 +34,6 @@ def flatten_lighting(img_arr):
 
 
 def normalize_contrast(arr):
-    """Нормализует контраст, сохраняя оригинальные цвета"""
     gray = np.mean(arr, axis=2)
     lo = np.percentile(gray, 1)
     hi = np.percentile(gray, 99)
@@ -42,7 +45,6 @@ def normalize_contrast(arr):
 
 
 def make_seamless(arr, size):
-    """Бесшовная стыковка через зеркальное наложение квадрантов"""
     h, w = arr.shape[:2]
     half_w, half_h = w // 2, h // 2
 
@@ -71,15 +73,19 @@ def make_seamless(arr, size):
 
 
 def handler(event: dict, context) -> dict:
-    """Берёт AI-текстуру Oxford 600D, мягко выравнивает освещение и делает бесшовной"""
+    """Берёт AI-текстуру Oxford 600D (4 варианта), выравнивает освещение и делает бесшовной"""
     if event.get('httpMethod') == 'OPTIONS':
         return {'statusCode': 200, 'headers': CORS, 'body': ''}
 
     params = event.get('queryStringParameters') or {}
     size = int(params.get('size', '1024'))
     size = max(256, min(1024, size))
+    variant = params.get('variant', '2')
+    if variant not in VARIANTS:
+        variant = '2'
 
-    req = urllib.request.Request(TEXTURE_URL, headers={'User-Agent': 'Mozilla/5.0'})
+    url = VARIANTS[variant]
+    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
     with urllib.request.urlopen(req, timeout=20) as resp:
         raw = resp.read()
 

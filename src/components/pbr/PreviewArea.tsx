@@ -13,14 +13,19 @@ interface PreviewAreaProps {
   fabricColor: string;
   setFabricColor: (c: string) => void;
   onRecompute: (ns: number, aor: number, color: string) => void;
+  variant: number;
+  onVariantChange: (v: number) => void;
 }
 
 const COLOR_PRESETS = ["#808080","#c62828","#1565c0","#2e7d32","#f9a825","#4a148c","#bf360c","#00695c","#1a1a1a","#e0e0e0"];
+
+const VARIANT_LABELS = ["#1 Мелкий", "#2 Крупный hex", "#3 Basketweave", "#4 Bold hex"];
 
 export default function PreviewArea({
   status, active, cur, tiling, setTiling,
   normalStr, setNormalStr, aoRadius, setAoRadius,
   fabricColor, setFabricColor, onRecompute,
+  variant, onVariantChange,
 }: PreviewAreaProps) {
   const ready = status === "done";
 
@@ -60,7 +65,7 @@ export default function PreviewArea({
             </div>
             <div style={{ marginTop:"10px", display:"flex", justifyContent:"space-between", width:"440px" }}>
               <span style={{ fontSize:"10px", color:"rgba(198,40,40,0.8)", letterSpacing:"0.15em" }}>{MAPS[active].tag}</span>
-              <span style={{ fontSize:"10px", color:"rgba(255,255,255,0.25)" }}>512×512 · TILE {tiling}×{tiling}</span>
+              <span style={{ fontSize:"10px", color:"rgba(255,255,255,0.25)" }}>1024×1024 · TILE {tiling}×{tiling}</span>
             </div>
             <div style={{ marginTop:"3px", fontSize:"11px", color:"rgba(255,255,255,0.28)", fontFamily:"'Rajdhani',sans-serif" }}>
               {MAPS[active].label} — {MAPS[active].hint}
@@ -107,6 +112,23 @@ export default function PreviewArea({
               <input type="color" value={fabricColor} onChange={e => { setFabricColor(e.target.value); onRecompute(normalStr, aoRadius, e.target.value); }}
                 style={{ position:"absolute", opacity:0, width:"100%", height:"100%", cursor:"pointer" }} />
             </label>
+          </div>
+        </div>
+        <div style={{ flex:1, padding:"14px 18px", borderRight:"1px solid rgba(255,255,255,0.06)" }}>
+          <label style={{ display:"block", fontSize:"9px", letterSpacing:"0.18em", color:"rgba(198,40,40,0.65)", marginBottom:"8px" }}>
+            ВАРИАНТ ТЕКСТУРЫ
+          </label>
+          <div style={{ display:"flex", gap:"4px", flexWrap:"wrap" }}>
+            {[1,2,3,4].map(v => (
+              <button key={v} onClick={() => { onVariantChange(v); }} style={{
+                padding:"4px 8px",
+                background: variant===v ? "#c62828" : "rgba(255,255,255,0.05)",
+                color: variant===v ? "#fff" : "rgba(255,255,255,0.35)",
+                border:`1px solid ${variant===v ? "#c62828" : "rgba(255,255,255,0.08)"}`,
+                borderRadius:"3px", cursor:"pointer",
+                fontFamily:"'IBM Plex Mono',monospace", fontSize:"9px",
+              }}>{VARIANT_LABELS[v-1]}</button>
+            ))}
           </div>
         </div>
         <div style={{ flex:1, padding:"14px 18px" }}>
